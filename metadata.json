@@ -1,0 +1,6 @@
+{
+  "name": "WhaleWhisper",
+  "description": "An ultra-minimalist, data-backed Web3 portfolio agent protected by the OKX x402 payment protocol.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
