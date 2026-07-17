@@ -61,12 +61,25 @@ export default function Home() {
     intent: string;
     rawLog: string[];
     portfolioRecommendation: Record<string, number>;
+    currentPortfolio?: Record<string, number>;
+    dataSource?: "live" | "mock";
   } | null>(null);
 
   // Deployment
   const [isDeploying, setIsDeploying] = useState<boolean>(false);
   const [deploymentLogs, setDeploymentLogs] = useState<(string | React.ReactNode)[]>([]);
   const [isDeployed, setIsDeployed] = useState<boolean>(false);
+
+  // Whale Directory
+  const [whaleDirectory, setWhaleDirectory] = useState<{
+    address: string;
+    alias: string;
+    totalVolumeUsd: number;
+    txCount: number;
+    source: "live" | "mock";
+  }[]>([]);
+  const [trackedWallets, setTrackedWallets] = useState<Set<string>>(new Set());
+  const [whaleDirectoryLoading, setWhaleDirectoryLoading] = useState<boolean>(false);
 
   // Compute portfolio delta adjustments for the universal router
   const portfolioDeltas = React.useMemo(() => {
@@ -517,7 +530,9 @@ export default function Home() {
           message: `Perform Multi-Agent sequential search for ${riskProfile} risk target`,
           riskProfile,
           timeframe,
-          transactions: [] // ScannerAgent parses mock or fetches dynamically
+          transactions: [], // ScannerAgent fetches live from /api/whales internally
+          userAddress: activeAddr || undefined, // Server-side Mainnet portfolio fetching
+          trackedWallets: trackedWallets.size > 0 ? Array.from(trackedWallets) : undefined,
         })
       });
 
@@ -529,6 +544,10 @@ export default function Home() {
 
         const data = await response.json();
         const parsedResult = JSON.parse(data.analysis);
+        // Attach currentPortfolio from server response
+        if (data.currentPortfolio) {
+          parsedResult.currentPortfolio = data.currentPortfolio;
+        }
         
         // Execute visual sequential stream of agents
         streamAgentPipeline(parsedResult);
@@ -552,6 +571,11 @@ export default function Home() {
     setAgentStep(1);
     addTerminalLog("[1] ScannerAgent: Persona - Analytical on-chain data retrieval specialist.", "info");
     addTerminalLog("[1] ScannerAgent: Scanning EVM mainnet whale patterns...", "info");
+    if (result.dataSource === "live") {
+      addTerminalLog("[1] ScannerAgent: ✅ Live Alchemy data loaded successfully.", "success");
+    } else {
+      addTerminalLog("[1] ScannerAgent: ⚠ Mock data fallback active (Alchemy not configured or unreachable).", "warning");
+    }
     
     setTimeout(() => {
       addTerminalLog("[1] ScannerAgent: Parsing sender, receiver, values, and token contracts...", "info");
@@ -744,19 +768,39 @@ export default function Home() {
         const token = TOKEN_REGISTRY.find(t => t.symbol === item.symbol);
         if (!token) continue;
 
+        // ── Proportional amount calculation (TESTNET SIMULATION) ────────────
+        // We derive amounts from deltaUSD but cap at safe testnet limits.
+        // These are NOT real DEX swaps — this is a simulated rebalancing signal
+        // on X Layer Testnet. No real assets change hands.
+        const MOCK_USD_PRICES: Record<string, number> = {
+          OKB: 45, BTC: 62000, ETH: 3300, SOL: 150,
+          POPCAT: 0.65, USDC: 1.0, USDT: 1.0,
+        };
+        const tokenUsdPrice = MOCK_USD_PRICES[token.symbol] || 1.0;
+        const absUsd = Math.abs(item.deltaUSD) || 0.5; // min 0.5 USD
+        
+        addLog(
+          <span className="text-zinc-400 text-xs">
+            [TESTNET SIMULATION] {token.symbol}: Δ{item.deltaPct > 0 ? "+" : ""}{item.deltaPct.toFixed(1)}% ≈ ${absUsd.toFixed(2)} USD rebalancing signal
+          </span>
+        );
         addLog(`[Router] Processing swap to Testnet ${token.symbol}...`);
         await new Promise(r => setTimeout(r, 600));
 
         let hash: `0x${string}`;
         if (token.native) {
-          // OKB Native micro-transfer
+          // OKB Native: proportional amount, capped at 0.001 OKB
+          const rawAmount = absUsd / tokenUsdPrice;
+          const cappedOkb = Math.min(rawAmount, 0.001); // max 0.001 OKB on testnet
+          const weiAmount = BigInt(Math.floor(cappedOkb * 1e18));
+          const safeWei = weiAmount < BigInt(1) ? BigInt("1000000000000") : weiAmount; // min 0.000001 OKB
           hash = await walletClient.sendTransaction({
             to: sellerAddress,
-            value: BigInt("100000000000000"), // 0.0001 OKB in wei
+            value: safeWei,
             gas: BigInt("21000")
           });
         } else {
-          // ERC-20 contract approve
+          // ERC-20: proportional approve amount, capped at reasonable units
           let tokenAddress = token.address;
           if (!tokenAddress) {
             if (token.symbol === "BTC") tokenAddress = process.env.NEXT_PUBLIC_TESTNET_BTC_ADDRESS || "0x1111111111111111111111111111111111111111";
@@ -767,9 +811,16 @@ export default function Home() {
             else if (token.symbol === "USDT") tokenAddress = process.env.NEXT_PUBLIC_TESTNET_USDT_ADDRESS || "0x67a15159048a1c8411c84b423f03b8420b9e29b4";
           }
           
-          // Function selector for approve(address,uint256) is 0x095ea7b3
+          // Proportional token units: absUsd / price, with 6-decimal cap for stables
+          const decimals = (token.symbol === "USDC" || token.symbol === "USDT") ? 6 : 18;
+          const rawTokenAmount = absUsd / tokenUsdPrice;
+          const cappedAmount = Math.min(rawTokenAmount, decimals === 6 ? 100 : 0.001); // max 100 USDC or 0.001 crypto
+          const approveAmount = BigInt(Math.floor(cappedAmount * 10 ** decimals));
+          const safeApprove = approveAmount < BigInt(1) ? BigInt("1") : approveAmount;
+
+          // Function selector for approve(address,uint256) = 0x095ea7b3
           const cleanSpender = sellerAddress.toLowerCase().replace("0x", "").padStart(64, "0");
-          const cleanAmount = BigInt("100000000000000").toString(16).padStart(64, "0");
+          const cleanAmount = safeApprove.toString(16).padStart(64, "0");
           const calldata = `0x095ea7b3${cleanSpender}${cleanAmount}` as `0x${string}`;
 
           hash = await walletClient.sendTransaction({
@@ -809,6 +860,22 @@ export default function Home() {
       setIsDeploying(false);
     }
   };
+
+  // Fetch Whale Directory on mount
+  useEffect(() => {
+    setWhaleDirectoryLoading(true);
+    fetch("/api/whales?sinceHours=24")
+      .then((r) => r.json())
+      .then((data: { whales?: any[] }) => {
+        if (data?.whales && data.whales.length > 0) {
+          setWhaleDirectory(data.whales.slice(0, 10));
+          // Pre-select all wallets by default
+          setTrackedWallets(new Set(data.whales.slice(0, 10).map((w: any) => w.address)));
+        }
+      })
+      .catch((err) => console.warn("Whale Directory fetch failed:", err))
+      .finally(() => setWhaleDirectoryLoading(false));
+  }, []);
 
   // Scroll to bottom of log containers
   useEffect(() => {
@@ -922,7 +989,59 @@ export default function Home() {
         {/* Right Column: Allocation & Actions */}
         <section className="flex flex-col bg-white p-8 md:p-12 justify-between">
           <div className="space-y-8">
+            {/* Whale Directory */}
+            <div>
+              <span className="text-[10px] tracking-widest font-mono text-zinc-400 uppercase font-black">WHALE WALLET DIRECTORY</span>
+              <div className="flex items-center justify-between mt-1 mb-3 border-b border-black pb-2">
+                <h2 className="text-xl font-black font-mono tracking-tighter uppercase">TRACKED WALLETS</h2>
+                {whaleDirectory.length > 0 && (
+                  <span className={`text-[9px] font-mono font-bold uppercase px-2 py-0.5 border ${
+                    whaleDirectory[0]?.source === "live"
+                      ? "border-emerald-600 text-emerald-600 bg-emerald-50"
+                      : "border-amber-500 text-amber-600 bg-amber-50"
+                  }`}>
+                    {whaleDirectory[0]?.source === "live" ? "● LIVE ALCHEMY" : "⚠ MOCK DATA"}
+                  </span>
+                )}
+              </div>
+
+              {whaleDirectoryLoading ? (
+                <div className="text-[10px] font-mono text-zinc-400 animate-pulse">Loading whale directory...</div>
+              ) : whaleDirectory.length === 0 ? (
+                <div className="text-[10px] font-mono text-zinc-400 italic">No whale data available. Configure ALCHEMY_API_KEY for live data.</div>
+              ) : (
+                <div className="space-y-1.5 max-h-[160px] overflow-y-auto">
+                  {whaleDirectory.map((whale) => (
+                    <label key={whale.address} className="flex items-center gap-2 cursor-pointer group">
+                      <input
+                        type="checkbox"
+                        checked={trackedWallets.has(whale.address)}
+                        onChange={() => {
+                          setTrackedWallets(prev => {
+                            const next = new Set(prev);
+                            if (next.has(whale.address)) next.delete(whale.address);
+                            else next.add(whale.address);
+                            return next;
+                          });
+                        }}
+                        className="w-3 h-3 accent-black flex-shrink-0"
+                      />
+                      <div className="flex-1 min-w-0">
+                        <span className="font-mono text-[10px] font-bold truncate block group-hover:text-black text-zinc-700">
+                          {whale.alias}
+                        </span>
+                        <span className="font-mono text-[9px] text-zinc-400">
+                          {whale.address.slice(0, 8)}...{whale.address.slice(-6)} · {whale.txCount} txns
+                        </span>
+                      </div>
+                    </label>
+                  ))}
+                </div>
+              )}
+            </div>
+
             {/* Header Configuration */}
+
             <div>
               <span className="text-[10px] tracking-widest font-mono text-zinc-400 uppercase font-black">PIPELINE METADATA</span>
               <h2 className="text-xl font-black font-mono tracking-tighter uppercase mt-1 mb-6 border-b border-black pb-2">TARGET STRATEGY</h2>

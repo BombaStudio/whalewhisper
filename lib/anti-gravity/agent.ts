@@ -1,32 +1,52 @@
-import { privateKeyToAccount } from "viem/accounts";
+// NOTE: This file runs SERVER-SIDE only (inside API routes).
+// Do not import client-only modules here.
 
 // OpenRouter API Configuration
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || "";
 const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || "google/gemini-2.5-flash";
 
+export type WalletClassification =
+  | "Whale"
+  | "Active Spender"
+  | "Accumulator/Saver"
+  | "Suspicious/Scammer"
+  | "Retail User";
+
+export type WalletIntent =
+  | "Accumulation"
+  | "Distribution"
+  | "Arbitrage"
+  | "Liquidity Provisioning";
+
 export interface ScannerPayload {
   rawLog: string[];
   transactions: any[];
+  /** Whether live Alchemy data was used or mock fallback */
+  dataSource: "live" | "mock";
 }
 
 export interface SievePayload {
-  classification: "Whale" | "Suspicious Mixer/Launderer" | "Retail User";
+  classification: WalletClassification;
   rawLog: string[];
   transactions: any[];
+  dataSource: "live" | "mock";
 }
 
 export interface IntentPayload {
-  classification: "Whale" | "Suspicious Mixer/Launderer" | "Retail User";
-  intent: "Accumulation" | "Distribution" | "Arbitrage" | "Liquidity Provisioning";
+  classification: WalletClassification;
+  intent: WalletIntent;
   rawLog: string[];
   transactions: any[];
+  dataSource: "live" | "mock";
 }
 
 export interface StrategistPayload {
-  classification: "Whale" | "Suspicious Mixer/Launderer" | "Retail User";
-  intent: "Accumulation" | "Distribution" | "Arbitrage" | "Liquidity Provisioning";
+  classification: WalletClassification;
+  intent: WalletIntent;
   rawLog: string[];
   portfolioRecommendation: Record<string, number>;
+  currentPortfolio?: Record<string, number>;
+  dataSource: "live" | "mock";
 }
 
 // Clean markdown code blocks from model JSON responses
@@ -123,15 +143,59 @@ export function generateMockTransactions(timeframe: string): any[] {
 
 // 1. ScannerAgent
 export class ScannerAgent {
-  public async execute(transactions: any[], timeframe: string): Promise<ScannerPayload> {
+  public async execute(
+    transactions: any[],
+    timeframe: string,
+    appUrl?: string
+  ): Promise<ScannerPayload> {
     console.log("Executing ScannerAgent...");
     let targetTxs = transactions;
+    let dataSource: "live" | "mock" = "live";
+
+    // If no transactions provided, try to fetch live whale data from /api/whales
     if (!targetTxs || targetTxs.length === 0) {
-      console.log("No transactions provided. Using high-fidelity mock mainnet transactions generator.");
-      targetTxs = generateMockTransactions(timeframe);
+      const baseUrl = appUrl || process.env.APP_URL || "http://localhost:3000";
+      try {
+        const hoursMap: Record<string, number> = {
+          DAILY: 24, WEEKLY: 168, MONTHLY: 720, YEARLY: 8760,
+        };
+        const sinceHours = hoursMap[timeframe] ?? 24;
+        const res = await fetch(`${baseUrl}/api/whales?sinceHours=${sinceHours}`, {
+          cache: "no-store",
+        });
+        if (!res.ok) throw new Error(`/api/whales returned ${res.status}`);
+        const data = await res.json() as { whales?: any[]; source?: string };
+        if (data?.whales && data.whales.length > 0) {
+          // Normalize whale API response to internal transaction format
+          targetTxs = data.whales.flatMap((whale: any) =>
+            (whale.sampleTransactions || []).map((tx: any) => ({
+              wallet: whale.address,
+              alias: whale.alias || `Whale ${whale.address.slice(0, 8)}...`,
+              action: tx.action || "TRANSFER",
+              asset: tx.asset || "ETH",
+              amount: tx.value != null ? `${tx.value} ${tx.asset || "ETH"}` : "N/A",
+              usdValue: `$${(whale.totalVolumeUsd || 0).toLocaleString()}`,
+              timestamp: tx.timestamp || "recent",
+            }))
+          );
+          dataSource = data.source === "mock" ? "mock" : "live";
+          if (dataSource === "mock") {
+            console.warn("⚠ [ScannerAgent] GERÇEK VERİ ALINAMADI – API MOCK VERİ KULLANIYOR");
+          } else {
+            console.log(`[ScannerAgent] Live Alchemy data loaded: ${targetTxs.length} transactions from ${data.whales.length} whale wallets`);
+          }
+        } else {
+          throw new Error("No whale entries returned");
+        }
+      } catch (fetchErr: unknown) {
+        const msg = fetchErr instanceof Error ? fetchErr.message : String(fetchErr);
+        console.warn(`⚠ [ScannerAgent] GERÇEK VERİ ALINAMADI – MOCK KULLANILIYOR: ${msg}`);
+        targetTxs = generateMockTransactions(timeframe);
+        dataSource = "mock";
+      }
     }
 
-    const rawLog: string[] = targetTxs.map(tx => {
+    const rawLog: string[] = targetTxs.map((tx: any) => {
       const wallet = tx.wallet || tx.from?.hash || tx.from || "unknown";
       const alias = tx.alias || "Unknown Whale";
       const action = tx.action || "TRANSFER";
@@ -142,7 +206,7 @@ export class ScannerAgent {
       return `[${timestamp}] Whale ${alias} (${wallet}) executed ${action} of ${amount} (Value: ${usdValue})`;
     });
 
-    return { rawLog, transactions: targetTxs };
+    return { rawLog, transactions: targetTxs, dataSource };
   }
 }
 
@@ -150,13 +214,25 @@ export class ScannerAgent {
 export class SieveAgent {
   public async execute(payload: ScannerPayload): Promise<SievePayload> {
     console.log("Executing SieveAgent...");
+    const VALID_CLASSIFICATIONS: WalletClassification[] = [
+      "Whale",
+      "Active Spender",
+      "Accumulator/Saver",
+      "Suspicious/Scammer",
+      "Retail User",
+    ];
+
     const systemInstruction = `You are the SieveAgent, a hardened forensic blockchain investigator.
-Evaluate the provided transaction logs and determine if the wallet activities represent a "Whale", a "Suspicious Mixer/Launderer", or a "Retail User".
-Provide EXACTLY one classification from the list.
-Output your response strictly as a JSON object containing:
-{
-  "classification": "Whale" | "Suspicious Mixer/Launderer" | "Retail User"
-}`;
+Evaluate the provided transaction logs and classify the primary wallet behavior.
+Choose EXACTLY ONE from the following 5 categories:
+- "Whale": Large-volume, market-moving transactions above $100K USD.
+- "Active Spender": Frequent, high-frequency transactions; buying and selling across DeFi protocols.
+- "Accumulator/Saver": Consistently buying and holding, low sell activity, building a long-term position.
+- "Suspicious/Scammer": Irregular patterns, mixer usage, rapid deposit-withdraw cycles, rug-pull-like movements.
+- "Retail User": Small, sporadic transactions with no clear large-scale strategy.
+
+Output your response strictly as a JSON object:
+{ "classification": "Whale" | "Active Spender" | "Accumulator/Saver" | "Suspicious/Scammer" | "Retail User" }`;
 
     const promptContext = `Transaction Logs:\n${payload.rawLog.join("\n")}`;
 
@@ -164,34 +240,49 @@ Output your response strictly as a JSON object containing:
       const response = await callLLM(systemInstruction, promptContext);
       const cleaned = cleanJsonResponse(response);
       const parsed = JSON.parse(cleaned);
-      const classification = parsed.classification || "Whale";
+      const raw = parsed.classification;
+      const classification: WalletClassification = VALID_CLASSIFICATIONS.includes(raw) ? raw : "Whale";
       return {
-        classification: (["Whale", "Suspicious Mixer/Launderer", "Retail User"].includes(classification) ? classification : "Whale") as any,
+        classification,
         rawLog: payload.rawLog,
-        transactions: payload.transactions
+        transactions: payload.transactions,
+        dataSource: payload.dataSource,
       };
     } catch (err) {
       console.warn("SieveAgent failed or key missing, using rule-based classification fallback:", err);
-      
-      // Rule-based fallback classification
-      let classification: SievePayload["classification"] = "Retail User";
-      const hasLargeValue = payload.transactions.some(tx => {
-        const usdStr = (tx.usdValue || "").replace(/[$,]/g, "");
-        const usdVal = parseFloat(usdStr);
-        return !isNaN(usdVal) && usdVal >= 100000;
-      });
-      const highFrequency = payload.transactions.length >= 8;
 
-      if (hasLargeValue) {
+      // Rule-based 5-category fallback
+      let classification: WalletClassification = "Retail User";
+      const totalUsd = payload.transactions.reduce((sum, tx) => {
+        const usdStr = (tx.usdValue || "").replace(/[$,]/g, "");
+        const val = parseFloat(usdStr);
+        return sum + (isNaN(val) ? 0 : val);
+      }, 0);
+      const txCount = payload.transactions.length;
+      const sells = payload.transactions.filter(tx => {
+        const a = (tx.action || "").toUpperCase();
+        return a.includes("SELL") || a.includes("WITHDRAW");
+      }).length;
+      const buys = payload.transactions.filter(tx => {
+        const a = (tx.action || "").toUpperCase();
+        return a.includes("BUY") || a.includes("DEPOSIT");
+      }).length;
+
+      if (totalUsd >= 100_000) {
         classification = "Whale";
-      } else if (highFrequency) {
-        classification = "Suspicious Mixer/Launderer";
+      } else if (txCount >= 8 && sells > buys * 1.5) {
+        classification = "Suspicious/Scammer";
+      } else if (txCount >= 5 && sells > buys) {
+        classification = "Active Spender";
+      } else if (buys > sells * 1.5) {
+        classification = "Accumulator/Saver";
       }
 
       return {
         classification,
         rawLog: payload.rawLog,
-        transactions: payload.transactions
+        transactions: payload.transactions,
+        dataSource: payload.dataSource,
       };
     }
   }
@@ -201,14 +292,16 @@ Output your response strictly as a JSON object containing:
 export class IntentAgent {
   public async execute(payload: SievePayload): Promise<IntentPayload> {
     console.log("Executing IntentAgent...");
+    const VALID_INTENTS: WalletIntent[] = [
+      "Accumulation", "Distribution", "Arbitrage", "Liquidity Provisioning",
+    ];
+
     const systemInstruction = `You are the IntentAgent, a behavioral market psychologist.
-Analyze the transaction logs and wallet classification to decipher the primary objective or intent of the wallet movements.
-Note: Acknowledge that while our client transaction fees and deployment operations run on X Layer Testnet (Chain ID: 195) using native OKB, our tracking and scanning intelligence evaluates live asset actions on X Layer and Ethereum Mainnet.
+Analyze the transaction logs and wallet classification to decipher the primary objective or intent.
+Note: Payment fees run on X Layer Testnet (Chain ID: 195) using OKB. Analytical data comes from Ethereum Mainnet.
 Select EXACTLY one intent: "Accumulation", "Distribution", "Arbitrage", or "Liquidity Provisioning".
-Output your response strictly as a JSON object containing:
-{
-  "intent": "Accumulation" | "Distribution" | "Arbitrage" | "Liquidity Provisioning"
-}`;
+Output strictly as JSON:
+{ "intent": "Accumulation" | "Distribution" | "Arbitrage" | "Liquidity Provisioning" }`;
 
     const promptContext = `Wallet Classification: ${payload.classification}\nTransaction Logs:\n${payload.rawLog.join("\n")}`;
 
@@ -216,23 +309,22 @@ Output your response strictly as a JSON object containing:
       const response = await callLLM(systemInstruction, promptContext);
       const cleaned = cleanJsonResponse(response);
       const parsed = JSON.parse(cleaned);
-      const intent = parsed.intent || "Accumulation";
+      const raw = parsed.intent;
+      const intent: WalletIntent = VALID_INTENTS.includes(raw) ? raw : "Accumulation";
       return {
         classification: payload.classification,
-        intent: (["Accumulation", "Distribution", "Arbitrage", "Liquidity Provisioning"].includes(intent) ? intent : "Accumulation") as any,
+        intent,
         rawLog: payload.rawLog,
-        transactions: payload.transactions
+        transactions: payload.transactions,
+        dataSource: payload.dataSource,
       };
     } catch (err) {
       console.warn("IntentAgent failed or key missing, using rule-based intent fallback:", err);
-      
-      // Rule-based fallback intent
-      let intent: IntentPayload["intent"] = "Accumulation";
-      let sells = 0;
-      let buys = 0;
-      let swaps = 0;
 
-      payload.transactions.forEach(tx => {
+      let intent: WalletIntent = "Accumulation";
+      let sells = 0, buys = 0, swaps = 0;
+
+      payload.transactions.forEach((tx: any) => {
         const action = (tx.action || "").toUpperCase();
         if (action.includes("SELL") || action.includes("WITHDRAW")) sells++;
         else if (action.includes("BUY") || action.includes("DEPOSIT")) buys++;
@@ -241,13 +333,13 @@ Output your response strictly as a JSON object containing:
 
       if (sells > buys && sells > swaps) intent = "Distribution";
       else if (swaps > buys && swaps > sells) intent = "Arbitrage";
-      else if (buys >= sells) intent = "Accumulation";
 
       return {
         classification: payload.classification,
         intent,
         rawLog: payload.rawLog,
-        transactions: payload.transactions
+        transactions: payload.transactions,
+        dataSource: payload.dataSource,
       };
     }
   }
@@ -255,11 +347,20 @@ Output your response strictly as a JSON object containing:
 
 // 4. StrategistAgent
 export class StrategistAgent {
-  public async execute(payload: IntentPayload, riskProfile: string, timeframe: string): Promise<StrategistPayload> {
+  public async execute(
+    payload: IntentPayload,
+    riskProfile: string,
+    timeframe: string,
+    currentPortfolio?: Record<string, number>
+  ): Promise<StrategistPayload> {
     console.log("Executing StrategistAgent...");
+    const currentPortfolioStr = currentPortfolio && Object.keys(currentPortfolio).length > 0
+      ? `\nUser's CURRENT on-chain portfolio (USD %): ${JSON.stringify(currentPortfolio)}\nFactor this in — recommend deltas that move toward the optimized allocation.`
+      : "";
+
     const systemInstruction = `You are the StrategistAgent, a quantitative crypto portfolio strategist.
 Consolidate the findings (Wallet Classification: ${payload.classification}, Intended Goal: ${payload.intent}) and generate an optimized portfolio allocation recommendation based on the user's risk profile (${riskProfile}) and timeframe (${timeframe}).
-Note: Acknowledge that while our client transaction fees and deployment operations run on X Layer Testnet (Chain ID: 195) using native OKB, our tracking and scanning intelligence evaluates live asset actions on X Layer and Ethereum Mainnet.
+Note: Payment fees run on X Layer Testnet (Chain ID: 195). Analytical data comes from Ethereum Mainnet.${currentPortfolioStr}
 
 Strict Whitelist Constraint:
 You are strictly forbidden from recommending ANY token ticker outside of this explicit whitelist: [OKB, BTC, ETH, SOL, POPCAT, USDC, USDT]. Every portfolio allocation recommendation output must sum up to exactly 100% using only these 7 asset choices. Do not invent or include any other tokens under any circumstances.
@@ -287,7 +388,9 @@ Output your response strictly as a JSON object containing:
         classification: payload.classification,
         intent: payload.intent,
         rawLog: payload.rawLog,
-        portfolioRecommendation: parsed.portfolioRecommendation || { "BTC": 40, "SOL": 30, "ETH": 20, "USDC": 10 }
+        portfolioRecommendation: parsed.portfolioRecommendation || { "BTC": 40, "SOL": 30, "ETH": 20, "USDC": 10 },
+        currentPortfolio,
+        dataSource: payload.dataSource,
       };
     } catch (err) {
       console.warn("StrategistAgent failed or key missing, using rule-based portfolio allocation fallback:", err);
@@ -322,7 +425,9 @@ Output your response strictly as a JSON object containing:
         classification: payload.classification,
         intent: payload.intent,
         rawLog: payload.rawLog,
-        portfolioRecommendation
+        portfolioRecommendation,
+        currentPortfolio,
+        dataSource: payload.dataSource,
       };
     }
   }
@@ -331,10 +436,12 @@ Output your response strictly as a JSON object containing:
 // Core Orchestration Agent Interface
 export class WhaleWhisperAgent {
   public async analyze(
-    userMessage: string, 
+    userMessage: string,
     forceRiskProfile?: "DEGEN" | "BALANCED" | "DEFENSIVE",
     timeframe: "DAILY" | "WEEKLY" | "MONTHLY" | "YEARLY" = "DAILY",
-    transactions?: any[] | null
+    transactions?: any[] | null,
+    currentPortfolio?: Record<string, number>,
+    appUrl?: string
   ): Promise<string> {
     
     // Determine risk profile
@@ -353,17 +460,19 @@ export class WhaleWhisperAgent {
       const strategist = new StrategistAgent();
 
       // Sequential execution sequence
-      const scannerPayload = await scanner.execute(transactions || [], timeframe);
+      const scannerPayload = await scanner.execute(transactions || [], timeframe, appUrl);
       const sievePayload = await sieve.execute(scannerPayload);
       const intentPayload = await intent.execute(sievePayload);
-      const finalPayload = await strategist.execute(intentPayload, riskProfile, timeframe);
+      const finalPayload = await strategist.execute(intentPayload, riskProfile, timeframe, currentPortfolio);
 
       // Return output strictly as a clean structured JSON stringified object
       return JSON.stringify({
         classification: finalPayload.classification,
         intent: finalPayload.intent,
         rawLog: finalPayload.rawLog,
-        portfolioRecommendation: finalPayload.portfolioRecommendation
+        portfolioRecommendation: finalPayload.portfolioRecommendation,
+        currentPortfolio: finalPayload.currentPortfolio,
+        dataSource: finalPayload.dataSource,
       }, null, 2);
 
     } catch (err: any) {

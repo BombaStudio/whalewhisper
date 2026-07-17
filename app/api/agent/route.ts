@@ -3,6 +3,7 @@ import { withX402, x402ResourceServer } from "@okxweb3/x402-next";
 import { OKXFacilitatorClient } from "@okxweb3/x402-core";
 import { ExactEvmScheme } from "@okxweb3/x402-evm/exact/server";
 import { WhaleWhisperAgent } from "@/lib/anti-gravity/agent";
+import { getWalletTokenBalances, getTokenUsdPrices } from "@/lib/alchemy";
 
 // Instantiate the OKX Facilitator Client using environment variables
 const facilitatorClient = new OKXFacilitatorClient({
@@ -42,7 +43,7 @@ server.register("eip155:195", exactEvmScheme);
 const handler = async (req: NextRequest): Promise<NextResponse<any>> => {
   try {
     const body = await req.json();
-    const { message, riskProfile, timeframe, transactions } = body;
+    const { message, riskProfile, timeframe, transactions, userAddress } = body;
 
     if (!message) {
       return NextResponse.json(
@@ -51,8 +52,50 @@ const handler = async (req: NextRequest): Promise<NextResponse<any>> => {
       ) as NextResponse<any>;
     }
 
+    // ─── Phase 3: Fetch user's real Mainnet portfolio server-side ──────────
+    let currentPortfolio: Record<string, number> | undefined;
+
+    if (userAddress && typeof userAddress === "string" && userAddress.startsWith("0x")) {
+      try {
+        const balances = await getWalletTokenBalances(userAddress);
+        if (balances.length > 0) {
+          const symbols = balances.map((b) => b.symbol.toUpperCase());
+          const prices = await getTokenUsdPrices(symbols);
+
+          // Attach USD prices to balances
+          let totalUsd = 0;
+          for (const b of balances) {
+            const price = prices[b.symbol.toUpperCase()] || 0;
+            b.usdPrice = price;
+            b.usdValue = b.balanceFormatted * price;
+            totalUsd += b.usdValue;
+          }
+
+          // Compute portfolio as percentage of total USD
+          if (totalUsd > 0) {
+            currentPortfolio = {};
+            for (const b of balances) {
+              const sym = b.symbol.toUpperCase();
+              // Only include whitelisted tokens
+              const WHITELIST = ["OKB", "BTC", "ETH", "SOL", "POPCAT", "USDC", "USDT"];
+              if (WHITELIST.includes(sym)) {
+                currentPortfolio[sym] = parseFloat(
+                  ((b.usdValue / totalUsd) * 100).toFixed(2)
+                );
+              }
+            }
+          }
+        }
+      } catch (portfolioErr: unknown) {
+        const msg = portfolioErr instanceof Error ? portfolioErr.message : String(portfolioErr);
+        console.warn(`[/api/agent] Could not fetch user portfolio for ${userAddress}: ${msg}`);
+        // Non-fatal — proceed without portfolio context
+      }
+    }
+
     const agent = new WhaleWhisperAgent();
-    
+    const appUrl = process.env.APP_URL || "http://localhost:3000";
+
     // Explicitly override instructions to analyze these real transactions and explain them
     const promptWithMainnetInstructions = `
 [SYSTEM INSTRUCTION: ALWAYS ANALYZE THE RETRIEVED REAL-WORLD MAINNET WHALE TRANSACTIONS FOR THIS REQUEST. EXPLAIN WHAT ACTIONS THESE WALLETS PERFORMED AND FOR WHAT STRATEGIC PURPOSE. THE USER SETTLED THEIR FEE OF $0.01 ON THE TESTNET (eip155:195) FOR COMPLIANCE AND LOW-COST TESTING, BUT THE ANALYTICAL REPORT DATA AND PORTFOLIO RATIOS MUST BE BASED ON THESE GENUINE ACTIONS.]
@@ -63,9 +106,16 @@ ${JSON.stringify(transactions || [], null, 2)}
 User Query: ${message}
 `;
 
-    const analysis = await agent.analyze(promptWithMainnetInstructions, riskProfile, timeframe, transactions);
+    const analysis = await agent.analyze(
+      promptWithMainnetInstructions,
+      riskProfile,
+      timeframe,
+      transactions,
+      currentPortfolio,
+      appUrl
+    );
 
-    return NextResponse.json({ analysis }) as NextResponse<any>;
+    return NextResponse.json({ analysis, currentPortfolio }) as NextResponse<any>;
   } catch (error: any) {
     console.error("Agent Execution Route Error:", error);
     return NextResponse.json(
