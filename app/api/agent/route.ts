@@ -139,8 +139,11 @@ export async function POST(req: NextRequest) {
         {
           scheme: "exact",
           payTo: process.env.SELLER_WALLET_ADDRESS || "0x742d35Cc6634C0532925a3b844Bc454e4438f44e", // ASP receiver address
-          price: "$0.01",
-          network: "eip155:195", // Default payment network (Testnet)
+          price: {
+            amount: "10000", // 0.01 USDC (6 decimals = 10,000 units)
+            asset: process.env.NEXT_PUBLIC_TESTNET_USDC_ADDRESS || "0x9e29b3aada05bf2d2c827af80bd28dc0b9b4fb0c", // X Layer Testnet USDC
+          },
+          network: "eip155:195", // X Layer Testnet
         }
       ],
       description: "Charge $0.01 USD equivalent to access the WhaleWhisper AI On-Chain Agent Analysis (X Layer Testnet)",
@@ -151,5 +154,14 @@ export async function POST(req: NextRequest) {
     false // syncFacilitatorOnStart: false
   );
 
-  return await wrappedHandler(req);
+  try {
+    return await wrappedHandler(req);
+  } catch (err: any) {
+    console.error("X402 wrapper routing error:", err);
+    // Return standard OKX 402 challenge response
+    return NextResponse.json(
+      { error: "Payment required challenge header validation failed." },
+      { status: 402, headers: { "WWW-Authenticate": "X402" } }
+    ) as NextResponse<any>;
+  }
 }

@@ -44,7 +44,8 @@ export default function Home() {
   // Wallet
   const [walletType, setWalletType] = useState<"none" | "sandbox" | "real">("none");
   const [address, setAddress] = useState<string>("");
-  const [balance, setBalance] = useState<string>("0.00");
+  const [okbBalance, setOkbBalance] = useState<string>("0.0000");
+  const [usdcBalance, setUsdcBalance] = useState<string>("0.00");
   const [isConnecting, setIsConnecting] = useState<boolean>(false);
   const [forceSandboxSign, setForceSandboxSign] = useState<boolean>(true);
   const [showFaucetModal, setShowFaucetModal] = useState<boolean>(false);
@@ -74,18 +75,46 @@ export default function Home() {
     setTerminalLogs(prev => [...prev, { message, type, timestamp }]);
   };
 
-  // Fetch real on-chain OKB balance for the target address on X Layer Testnet
-  const getOKBBalance = async (walletAddress: string): Promise<string> => {
+  // Fetch real on-chain OKB and USDC balances for the target address on X Layer Testnet
+  const fetchBalances = async (walletAddress: string): Promise<{ okb: string; usdc: string }> => {
+    if (!walletAddress) return { okb: "0.0000", usdc: "0.00" };
+    let okbStr = "0.0000";
+    let usdcStr = "0.00";
     try {
-      const balanceBI = await publicClient.getBalance({
+      // 1. Fetch OKB balance
+      const okbBalanceBI = await publicClient.getBalance({
         address: walletAddress as `0x${string}`,
       });
-      const balanceNum = Number(balanceBI) / 1e18;
-      return balanceNum.toFixed(4);
+      const okbVal = Number(okbBalanceBI) / 1e18;
+      okbStr = okbVal.toFixed(4);
+      setOkbBalance(okbStr);
+
+      // 2. Fetch USDC balance (6 decimals)
+      const usdcContract = process.env.NEXT_PUBLIC_TESTNET_USDC_ADDRESS || "0x9e29b3aada05bf2d2c827af80bd28dc0b9b4fb0c";
+      let usdcVal = 0.00;
+      try {
+        const usdcBalanceBI = await publicClient.readContract({
+          address: usdcContract as `0x${string}`,
+          abi: [{
+            name: 'balanceOf',
+            type: 'function',
+            stateMutability: 'view',
+            inputs: [{ name: 'account', type: 'address' }],
+            outputs: [{ name: '', type: 'uint256' }],
+          }],
+          functionName: 'balanceOf',
+          args: [walletAddress as `0x${string}`],
+        }) as bigint;
+        usdcVal = Number(usdcBalanceBI) / 1e6;
+      } catch (err) {
+        console.warn("Failed to fetch ERC20 USDC balance from contract:", err);
+      }
+      usdcStr = usdcVal.toFixed(2);
+      setUsdcBalance(usdcStr);
     } catch (err) {
-      console.error("Failed to fetch native OKB balance:", err);
-      return "0.0000";
+      console.error("Failed to query balances:", err);
     }
+    return { okb: okbStr, usdc: usdcStr };
   };
 
   // Balance polling effect
@@ -105,15 +134,15 @@ export default function Home() {
       }
 
       if (!activeAddr) {
-        if (active) setBalance("0.00");
+        if (active) {
+          setOkbBalance("0.0000");
+          setUsdcBalance("0.00");
+        }
         return;
       }
 
-      try {
-        const bal = await getOKBBalance(activeAddr);
-        if (active) setBalance(bal);
-      } catch (err) {
-        console.error(err);
+      if (active) {
+        await fetchBalances(activeAddr);
       }
     };
 
@@ -136,13 +165,13 @@ export default function Home() {
     const handleAccounts = async (accounts: string[]) => {
       if (accounts && accounts.length > 0) {
         setAddress(accounts[0]);
-        const bal = await getOKBBalance(accounts[0]);
-        setBalance(bal);
+        await fetchBalances(accounts[0]);
         addTerminalLog(`Active wallet account updated: ${accounts[0]}`, "info");
       } else {
         setWalletType("none");
         setAddress("");
-        setBalance("0.00");
+        setOkbBalance("0.0000");
+        setUsdcBalance("0.00");
         addTerminalLog("Wallet account disconnected from MetaMask.", "warning");
       }
     };
@@ -154,8 +183,7 @@ export default function Home() {
         addTerminalLog("Target network mismatch. Switch target in wallet UI to X Layer Testnet.", "warning");
       }
       if (address) {
-        const bal = await getOKBBalance(address);
-        setBalance(bal);
+        await fetchBalances(address);
       }
     };
 
@@ -182,8 +210,7 @@ export default function Home() {
             setAddress(accounts[0]);
             setWalletType("real");
             setForceSandboxSign(false);
-            const bal = await getOKBBalance(accounts[0]);
-            setBalance(bal);
+            await fetchBalances(accounts[0]);
             addTerminalLog(`Injected wallet session restored: ${accounts[0]}`, "success");
           }
         } catch (err) {
@@ -240,8 +267,7 @@ export default function Home() {
         setAddress(accounts[0]);
         setWalletType("real");
         setForceSandboxSign(false);
-        const realBal = await getOKBBalance(accounts[0]);
-        setBalance(realBal);
+        await fetchBalances(accounts[0]);
         addTerminalLog(`Connected browser wallet: ${accounts[0]}`, "success");
       } else {
         addTerminalLog("Wallet connection rejected by user.", "warning");
@@ -257,7 +283,8 @@ export default function Home() {
   const disconnectWallet = () => {
     setWalletType("none");
     setAddress("");
-    setBalance("0.00");
+    setOkbBalance("0.0000");
+    setUsdcBalance("0.00");
     addTerminalLog("Wallet session disconnected.", "warning");
   };
 
@@ -282,8 +309,7 @@ export default function Home() {
         setAddress(account.address);
         currentWalletType = "sandbox";
         setWalletType("sandbox");
-        const realBal = await getOKBBalance(account.address);
-        setBalance(realBal);
+        await fetchBalances(account.address);
         addTerminalLog(`Sandbox wallet auto-instantiated: ${account.address}`, "success");
       } else if (eth) {
         addTerminalLog("No active wallet session. Attempting auto-connection via injected Web3 provider...", "info");
@@ -294,8 +320,7 @@ export default function Home() {
             setAddress(currentAddress);
             currentWalletType = "real";
             setWalletType("real");
-            const realBal = await getOKBBalance(accounts[0]);
-            setBalance(realBal);
+            await fetchBalances(accounts[0]);
             addTerminalLog(`Connected browser wallet: ${accounts[0]}`, "success");
           } else {
             addTerminalLog("Wallet connection rejected by user.", "error");
@@ -325,16 +350,23 @@ export default function Home() {
       }
     }
 
-    let currentBalanceStr = balance;
+    let fresh = { okb: okbBalance, usdc: usdcBalance };
     if (activeAddr) {
-      currentBalanceStr = await getOKBBalance(activeAddr);
-      setBalance(currentBalanceStr);
+      fresh = await fetchBalances(activeAddr);
     }
 
-    const balanceNum = parseFloat(currentBalanceStr);
-    if (balanceNum < 0.0001) {
+    const okbVal = parseFloat(fresh.okb);
+    const usdcVal = parseFloat(fresh.usdc);
+
+    if (okbVal === 0) {
       setShowFaucetModal(true);
-      addTerminalLog(`Analysis aborted: insufficient native OKB balance (${currentBalanceStr} OKB). Claims required from the faucet.`, "error");
+      addTerminalLog("Analysis aborted: Your testnet wallet is empty. Claims required from the faucet.", "error");
+      return;
+    }
+
+    if (usdcVal < 0.01) {
+      setShowFaucetModal(true);
+      addTerminalLog(`Analysis aborted: insufficient Testnet USDC balance (${fresh.usdc} USDC). $0.01 USDC is required to proceed.`, "error");
       return;
     }
 
@@ -444,7 +476,7 @@ export default function Home() {
       if (response.status === 200) {
         addTerminalLog("x402 payment settled! Verification token accepted.", "success");
         if (currentWalletType === "sandbox") {
-          setBalance(prev => (parseFloat(prev) - 0.01).toFixed(2));
+          setUsdcBalance(prev => (parseFloat(prev) - 0.01).toFixed(2));
         }
 
         const data = await response.json();
@@ -582,7 +614,7 @@ export default function Home() {
 
       addLog("Requesting wallet transaction signature...");
       const hash = await walletClient.sendTransaction({
-        to: (process.env.NEXT_PUBLIC_SELLER_WALLET_ADDRESS || "0x742d35Cc6634C0532925a3b844Bc454e4438f44e") as `0x${string}`,
+        to: (process.env.NEXT_PUBLIC_SELLER_WALLET_ADDRESS || process.env.SELLER_WALLET_ADDRESS || "0x742d35Cc6634C0532925a3b844Bc454e4438f44e") as `0x${string}`,
         value: BigInt("100000000000000"), // 0.0001 OKB in wei
       });
 
@@ -593,7 +625,7 @@ export default function Home() {
         <span className="text-emerald-400">
           Successfully deployed! Tx Hash:{" "}
           <a
-            href={`https://www.okx.com/web3/explorer/xlayer/tx/${hash}`}
+            href={`https://www.okx.com/web3/explorer/xlayer-test/tx/${hash}`}
             target="_blank"
             rel="noreferrer"
             className="underline font-bold text-white hover:text-zinc-200"
@@ -663,8 +695,13 @@ export default function Home() {
               <div className="border border-black px-3 py-1.5 bg-zinc-50">
                 <span className="text-zinc-400">ADDR:</span> <span className="font-bold">{address.slice(0, 6)}...{address.slice(-4)}</span>
               </div>
-              <div className="border border-black px-3 py-1.5 bg-zinc-50">
-                <span className="text-zinc-400">BAL:</span> <span className="font-bold">{balance} OKB</span>
+              <div className="border border-black px-3 py-1.5 bg-zinc-50 flex gap-4">
+                <div>
+                  <span className="text-zinc-400 font-mono">OKB:</span> <span className="font-bold font-mono">{okbBalance}</span>
+                </div>
+                <div className="border-l border-zinc-300 pl-4">
+                  <span className="text-zinc-400 font-mono">USDC:</span> <span className="font-bold font-mono">{usdcBalance}</span>
+                </div>
               </div>
               <button
                 onClick={disconnectWallet}
@@ -829,18 +866,18 @@ export default function Home() {
               </div>
             )}
 
-            {parseFloat(balance) === 0 && walletType !== "none" && (
+            {parseFloat(okbBalance) === 0 && walletType !== "none" && (
               <div className="text-rose-600 font-mono text-[10px] uppercase text-center border border-rose-600 bg-rose-50/50 py-2.5 px-4 mb-4">
-                Your testnet wallet is empty. Click{" "}
+                Your testnet wallet is empty. Please use the OKX Faucet or visit{" "}
                 <a 
                   href="https://www.okx.com/en-sg/help/okx-ai-101" 
                   target="_blank" 
                   rel="noreferrer" 
                   className="underline font-bold text-rose-800 hover:text-black"
                 >
-                  here
+                  https://www.okx.com/en-sg/help/okx-ai-101
                 </a>{" "}
-                or use the Faucet button in your OKX Wallet to get free OKB.
+                to claim free OKB.
               </div>
             )}
 
@@ -928,8 +965,9 @@ export default function Home() {
               {walletType === "sandbox" && (
                 <button
                   onClick={() => {
-                    setBalance("0.5000");
-                    addTerminalLog("Auto-funded Sandbox wallet with mock OKB.", "success");
+                    setOkbBalance("0.5000");
+                    setUsdcBalance("10.00");
+                    addTerminalLog("Auto-funded Sandbox wallet with mock OKB and Testnet USDC.", "success");
                     setShowFaucetModal(false);
                   }}
                   className="w-full py-2.5 border border-black hover:bg-zinc-50 font-bold uppercase tracking-wider"
