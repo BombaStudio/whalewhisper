@@ -94,7 +94,7 @@ const handler = async (req: NextRequest): Promise<NextResponse<any>> => {
     }
 
     const agent = new WhaleWhisperAgent();
-    const appUrl = process.env.APP_URL || "http://localhost:3000";
+    const appUrl = req.nextUrl?.origin || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : process.env.APP_URL || "http://localhost:3000");
 
     // Explicitly override instructions to analyze these real transactions and explain them
     const promptWithMainnetInstructions = `

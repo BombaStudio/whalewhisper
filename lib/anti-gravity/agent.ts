@@ -154,7 +154,8 @@ export class ScannerAgent {
 
     // If no transactions provided, try to fetch live whale data from /api/whales
     if (!targetTxs || targetTxs.length === 0) {
-      const baseUrl = appUrl || process.env.APP_URL || "http://localhost:3000";
+      const vercelUrl = process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : undefined;
+      const baseUrl = appUrl || vercelUrl || (process.env.APP_URL && !process.env.APP_URL.includes("localhost") ? process.env.APP_URL : undefined) || vercelUrl || "http://localhost:3000";
       try {
         const hoursMap: Record<string, number> = {
           DAILY: 24, WEEKLY: 168, MONTHLY: 720, YEARLY: 8760,
