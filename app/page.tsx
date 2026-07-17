@@ -17,6 +17,7 @@ import { createPublicClient, http, createWalletClient, custom } from "viem";
 import { privateKeyToAccount, generatePrivateKey } from "viem/accounts";
 import { wrapFetchWithPaymentFromConfig } from "@okxweb3/x402-fetch";
 import { ExactEvmScheme, toClientEvmSigner } from "@okxweb3/x402-evm";
+import { TOKEN_REGISTRY, MOCK_TOKEN_PRICES } from "@/lib/utils";
 
 interface LogEntry {
   message: string;
@@ -46,6 +47,7 @@ export default function Home() {
   const [address, setAddress] = useState<string>("");
   const [okbBalance, setOkbBalance] = useState<string>("0.0000");
   const [usdcBalance, setUsdcBalance] = useState<string>("0.00");
+  const [tokenBalances, setTokenBalances] = useState<Record<string, string>>({});
   const [isConnecting, setIsConnecting] = useState<boolean>(false);
   const [forceSandboxSign, setForceSandboxSign] = useState<boolean>(true);
   const [showFaucetModal, setShowFaucetModal] = useState<boolean>(false);
@@ -66,6 +68,41 @@ export default function Home() {
   const [deploymentLogs, setDeploymentLogs] = useState<(string | React.ReactNode)[]>([]);
   const [isDeployed, setIsDeployed] = useState<boolean>(false);
 
+  // Compute portfolio delta adjustments for the universal router
+  const portfolioDeltas = React.useMemo(() => {
+    if (!analysisResult) return [];
+
+    const valuations: Record<string, number> = {};
+    let totalValuation = 0;
+    
+    TOKEN_REGISTRY.forEach(token => {
+      const balStr = tokenBalances[token.symbol] || "0.00";
+      const price = MOCK_TOKEN_PRICES[token.symbol] || 1.0;
+      const value = parseFloat(balStr) * price;
+      valuations[token.symbol] = value;
+      totalValuation += value;
+    });
+
+    const baselineValuation = totalValuation > 0 ? totalValuation : 1000.0;
+
+    return TOKEN_REGISTRY.map(token => {
+      const currentVal = valuations[token.symbol] || 0;
+      const currentPct = totalValuation > 0 ? (currentVal / totalValuation) * 100 : 0;
+      const targetPct = analysisResult.portfolioRecommendation[token.symbol] || 0;
+      const deltaPct = targetPct - currentPct;
+      const deltaUSD = (deltaPct * baselineValuation) / 100;
+
+      return {
+        symbol: token.symbol,
+        currentPct: parseFloat(currentPct.toFixed(2)),
+        targetPct,
+        deltaPct: parseFloat(deltaPct.toFixed(2)),
+        deltaUSD: parseFloat(deltaUSD.toFixed(2)),
+        currentBalance: tokenBalances[token.symbol] || "0.00"
+      };
+    });
+  }, [analysisResult, tokenBalances]);
+
   const terminalEndRef = useRef<HTMLDivElement>(null);
   const deployEndRef = useRef<HTMLDivElement>(null);
 
@@ -75,45 +112,56 @@ export default function Home() {
     setTerminalLogs(prev => [...prev, { message, type, timestamp }]);
   };
 
-  // Fetch real on-chain OKB and USDC balances for the target address on X Layer Testnet
+  // Fetch real on-chain OKB and registry ERC-20 balances for the target address on X Layer Testnet
   const fetchBalances = async (walletAddress: string): Promise<{ okb: string; usdc: string }> => {
     if (!walletAddress) return { okb: "0.0000", usdc: "0.00" };
-    let okbStr = "0.0000";
-    let usdcStr = "0.00";
-    try {
-      // 1. Fetch OKB balance
-      const okbBalanceBI = await publicClient.getBalance({
-        address: walletAddress as `0x${string}`,
-      });
-      const okbVal = Number(okbBalanceBI) / 1e18;
-      okbStr = okbVal.toFixed(4);
-      setOkbBalance(okbStr);
-
-      // 2. Fetch USDC balance (6 decimals)
-      const usdcContract = process.env.NEXT_PUBLIC_TESTNET_USDC_ADDRESS || "0x9e29b3aada05bf2d2c827af80bd28dc0b9b4fb0c";
-      let usdcVal = 0.00;
+    const balances: Record<string, string> = {};
+    
+    for (const token of TOKEN_REGISTRY) {
       try {
-        const usdcBalanceBI = await publicClient.readContract({
-          address: usdcContract as `0x${string}`,
-          abi: [{
-            name: 'balanceOf',
-            type: 'function',
-            stateMutability: 'view',
-            inputs: [{ name: 'account', type: 'address' }],
-            outputs: [{ name: '', type: 'uint256' }],
-          }],
-          functionName: 'balanceOf',
-          args: [walletAddress as `0x${string}`],
-        }) as bigint;
-        usdcVal = Number(usdcBalanceBI) / 1e6;
+        if (token.native) {
+          const okbBI = await publicClient.getBalance({
+            address: walletAddress as `0x${string}`,
+          });
+          const okbVal = Number(okbBI) / 1e18;
+          balances[token.symbol] = okbVal.toFixed(4);
+        } else {
+          let tokenAddress = token.address;
+          if (!tokenAddress) {
+            if (token.symbol === "BTC") tokenAddress = process.env.NEXT_PUBLIC_TESTNET_BTC_ADDRESS || "0x1111111111111111111111111111111111111111";
+            else if (token.symbol === "ETH") tokenAddress = process.env.NEXT_PUBLIC_TESTNET_ETH_ADDRESS || "0x2222222222222222222222222222222222222222";
+            else if (token.symbol === "SOL") tokenAddress = process.env.NEXT_PUBLIC_TESTNET_SOL_ADDRESS || "0x3333333333333333333333333333333333333333";
+            else if (token.symbol === "POPCAT") tokenAddress = process.env.NEXT_PUBLIC_TESTNET_POPCAT_ADDRESS || "0x4444444444444444444444444444444444444444";
+            else if (token.symbol === "USDC") tokenAddress = process.env.NEXT_PUBLIC_TESTNET_USDC_ADDRESS || "0x9e29b3aada05bf2d2c827af80bd28dc0b9b4fb0c";
+            else if (token.symbol === "USDT") tokenAddress = process.env.NEXT_PUBLIC_TESTNET_USDT_ADDRESS || "0x67a15159048a1c8411c84b423f03b8420b9e29b4";
+          }
+          const balBI = await publicClient.readContract({
+            address: tokenAddress as `0x${string}`,
+            abi: [{
+              name: 'balanceOf',
+              type: 'function',
+              stateMutability: 'view',
+              inputs: [{ name: 'account', type: 'address' }],
+              outputs: [{ name: '', type: 'uint256' }],
+            }],
+            functionName: 'balanceOf',
+            args: [walletAddress as `0x${string}`],
+          }) as bigint;
+          const tokenVal = Number(balBI) / 10 ** token.decimals;
+          balances[token.symbol] = tokenVal.toFixed(token.decimals === 6 ? 2 : 4);
+        }
       } catch (err) {
-        console.warn("Failed to fetch ERC20 USDC balance from contract:", err);
+        console.warn(`Failed to read balance for ${token.symbol}:`, err);
+        balances[token.symbol] = token.decimals === 6 ? "0.00" : "0.0000";
       }
-      usdcStr = usdcVal.toFixed(2);
-      setUsdcBalance(usdcStr);
-    } catch (err) {
-      console.error("Failed to query balances:", err);
     }
+    
+    setTokenBalances(balances);
+    const okbStr = balances["OKB"] || "0.0000";
+    const usdcStr = balances["USDC"] || "0.00";
+    setOkbBalance(okbStr);
+    setUsdcBalance(usdcStr);
+    
     return { okb: okbStr, usdc: usdcStr };
   };
 
@@ -562,20 +610,15 @@ export default function Home() {
       setDeploymentLogs(prev => [...prev, log]);
     };
 
+    const sellerAddress = (process.env.NEXT_PUBLIC_SELLER_WALLET_ADDRESS || process.env.SELLER_WALLET_ADDRESS || "0x742d35Cc6634C0532925a3b844Bc454e4438f44e") as `0x${string}`;
+
     try {
-      addLog("Connecting to X Layer Testnet node (https://xlayertestrpc.okx.com)...");
+      addLog("[Router] Initiating portfolio rebalancing sequence...");
       await new Promise(r => setTimeout(r, 600));
 
-      addLog("Assembling smart contract deployment parameters...");
-      await new Promise(r => setTimeout(r, 600));
-
-      addLog("Encoding portfolio allocation structures...");
-      addLog(`Target allocation: ${Object.entries(analysisResult.portfolioRecommendation)
+      addLog(`[Router] Realignment target: ${Object.entries(analysisResult.portfolioRecommendation)
         .map(([asset, percentage]) => `${asset} (${percentage}%)`)
         .join(", ")}`);
-      await new Promise(r => setTimeout(r, 600));
-
-      addLog("Preparing on-chain transfer of 0.0001 OKB to verify deployment allocation...");
       await new Promise(r => setTimeout(r, 600));
 
       let walletClient;
@@ -612,30 +655,76 @@ export default function Home() {
         });
       }
 
-      addLog("Requesting wallet transaction signature...");
-      const hash = await walletClient.sendTransaction({
-        to: (process.env.NEXT_PUBLIC_SELLER_WALLET_ADDRESS || process.env.SELLER_WALLET_ADDRESS || "0x742d35Cc6634C0532925a3b844Bc454e4438f44e") as `0x${string}`,
-        value: BigInt("100000000000000"), // 0.0001 OKB in wei
-      });
+      // Loop through all whitelisted assets in registry that have target recommendations > 0
+      const activeTargets = portfolioDeltas.filter(item => item.targetPct > 0);
 
-      addLog("Transaction broadcasted to mempool. Waiting for confirmation...");
-      await new Promise(r => setTimeout(r, 1000));
+      if (activeTargets.length === 0) {
+        addLog("[Router] No allocation shifts required. Realignment complete.");
+        setIsDeployed(true);
+        return;
+      }
 
-      addLog(
-        <span className="text-emerald-400">
-          Successfully deployed! Tx Hash:{" "}
-          <a
-            href={`https://www.okx.com/web3/explorer/xlayer-test/tx/${hash}`}
-            target="_blank"
-            rel="noreferrer"
-            className="underline font-bold text-white hover:text-zinc-200"
-          >
-            {hash.slice(0, 10)}...{hash.slice(-8)}
-          </a>
-        </span>
-      );
+      for (const item of activeTargets) {
+        const token = TOKEN_REGISTRY.find(t => t.symbol === item.symbol);
+        if (!token) continue;
 
+        addLog(`[Router] Processing swap to Testnet ${token.symbol}...`);
+        await new Promise(r => setTimeout(r, 600));
+
+        let hash: `0x${string}`;
+        if (token.native) {
+          // OKB Native micro-transfer
+          hash = await walletClient.sendTransaction({
+            to: sellerAddress,
+            value: BigInt("100000000000000"), // 0.0001 OKB in wei
+          });
+        } else {
+          // ERC-20 contract approve
+          let tokenAddress = token.address;
+          if (!tokenAddress) {
+            if (token.symbol === "BTC") tokenAddress = process.env.NEXT_PUBLIC_TESTNET_BTC_ADDRESS || "0x1111111111111111111111111111111111111111";
+            else if (token.symbol === "ETH") tokenAddress = process.env.NEXT_PUBLIC_TESTNET_ETH_ADDRESS || "0x2222222222222222222222222222222222222222";
+            else if (token.symbol === "SOL") tokenAddress = process.env.NEXT_PUBLIC_TESTNET_SOL_ADDRESS || "0x3333333333333333333333333333333333333333";
+            else if (token.symbol === "POPCAT") tokenAddress = process.env.NEXT_PUBLIC_TESTNET_POPCAT_ADDRESS || "0x4444444444444444444444444444444444444444";
+            else if (token.symbol === "USDC") tokenAddress = process.env.NEXT_PUBLIC_TESTNET_USDC_ADDRESS || "0x9e29b3aada05bf2d2c827af80bd28dc0b9b4fb0c";
+            else if (token.symbol === "USDT") tokenAddress = process.env.NEXT_PUBLIC_TESTNET_USDT_ADDRESS || "0x67a15159048a1c8411c84b423f03b8420b9e29b4";
+          }
+          
+          // Function selector for approve(address,uint256) is 0x095ea7b3
+          const cleanSpender = sellerAddress.toLowerCase().replace("0x", "").padStart(64, "0");
+          const cleanAmount = BigInt("100000000000000").toString(16).padStart(64, "0");
+          const calldata = `0x095ea7b3${cleanSpender}${cleanAmount}` as `0x${string}`;
+
+          hash = await walletClient.sendTransaction({
+            to: tokenAddress as `0x${string}`,
+            data: calldata
+          });
+        }
+
+        addLog(
+          <span className="text-emerald-400">
+            [Router] Processing swap to Testnet {token.symbol} (Tx:{" "}
+            <a
+              href={`https://www.okx.com/web3/explorer/xlayer-test/tx/${hash}`}
+              target="_blank"
+              rel="noreferrer"
+              className="underline font-bold text-white hover:text-zinc-200"
+            >
+              {hash.slice(0, 10)}...{hash.slice(-8)}
+            </a>
+            )... Success!
+          </span>
+        );
+        await new Promise(r => setTimeout(r, 800));
+      }
+
+      addLog("[Router] All swap orders settled. Rebalancing sequence completed successfully!");
       setIsDeployed(true);
+      
+      // Update fresh balances
+      if (address) {
+        await fetchBalances(address);
+      }
     } catch (err: any) {
       addLog(<span className="text-rose-500 font-bold">Deployment aborted: {err.message || err}</span>);
     } finally {
@@ -828,24 +917,37 @@ export default function Home() {
                       <span className="text-xs font-mono font-bold uppercase">{analysisResult.intent}</span>
                     </div>
                   </div>
-
                   <div>
-                    <span className="text-[10px] font-mono text-zinc-400 uppercase block mb-3">Portfolio Allocation Recommendation</span>
-                    <div className="space-y-3.5">
-                      {Object.entries(analysisResult.portfolioRecommendation).map(([asset, percentage]) => (
-                        <div key={asset}>
-                          <div className="flex justify-between items-center text-xs font-mono mb-1 font-bold">
-                            <span>{asset}</span>
-                            <span>{percentage}%</span>
+                    <span className="text-[10px] font-mono text-zinc-400 uppercase block mb-3">Portfolio Realignment & Deltas</span>
+                    <div className="space-y-3">
+                      {portfolioDeltas.map((item) => {
+                        if (item.targetPct === 0 && item.currentPct === 0) return null;
+                        const isPositive = item.deltaPct > 0;
+                        const isZero = item.deltaPct === 0;
+
+                        return (
+                          <div key={item.symbol} className="border border-zinc-250 p-3 bg-white/70">
+                            <div className="flex justify-between items-center text-[11px] font-mono mb-1">
+                              <span className="font-bold">{item.symbol}</span>
+                              <span className="text-zinc-500 font-bold">{item.currentBalance} {item.symbol}</span>
+                            </div>
+                            
+                            <div className="flex justify-between items-center text-[9px] font-mono text-zinc-500 mb-2">
+                              <span>Allocation: {item.currentPct}% &rarr; {item.targetPct}%</span>
+                              <span className={isZero ? "text-zinc-400 font-bold" : isPositive ? "text-emerald-600 font-bold" : "text-rose-600 font-bold"}>
+                                {isZero ? "0.00%" : `${isPositive ? "+" : ""}${item.deltaPct}% (${isPositive ? "+" : ""}$${item.deltaUSD.toFixed(2)})`}
+                              </span>
+                            </div>
+
+                            <div className="w-full h-2 bg-zinc-200 border border-black relative">
+                              <div
+                                className="h-full bg-black transition-all duration-500"
+                                style={{ width: `${item.targetPct}%` }}
+                              />
+                            </div>
                           </div>
-                          <div className="w-full h-3.5 bg-zinc-200 border border-black">
-                            <div
-                              className="h-full bg-black transition-all duration-500"
-                              style={{ width: `${percentage}%` }}
-                            />
-                          </div>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   </div>
                 </div>

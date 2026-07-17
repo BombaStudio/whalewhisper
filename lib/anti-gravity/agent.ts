@@ -260,17 +260,22 @@ export class StrategistAgent {
     const systemInstruction = `You are the StrategistAgent, a quantitative crypto portfolio strategist.
 Consolidate the findings (Wallet Classification: ${payload.classification}, Intended Goal: ${payload.intent}) and generate an optimized portfolio allocation recommendation based on the user's risk profile (${riskProfile}) and timeframe (${timeframe}).
 Note: Acknowledge that while our client transaction fees and deployment operations run on X Layer Testnet (Chain ID: 195) using native OKB, our tracking and scanning intelligence evaluates live asset actions on X Layer and Ethereum Mainnet.
+
+Strict Whitelist Constraint:
+You are strictly forbidden from recommending ANY token ticker outside of this explicit whitelist: [OKB, BTC, ETH, SOL, POPCAT, USDC, USDT]. Every portfolio allocation recommendation output must sum up to exactly 100% using only these 7 asset choices. Do not invent or include any other tokens under any circumstances.
+
 Output your response strictly as a JSON object containing:
 {
   "portfolioRecommendation": {
     "BTC": number,
-    "SOL": number,
     "ETH": number,
+    "SOL": number,
+    "POPCAT": number,
     "USDC": number,
-    ...
+    "USDT": number,
+    "OKB": number
   }
-}
-Note: The sum of all asset percentages in portfolioRecommendation must equal exactly 100. Limit the assets to top tokens like BTC, ETH, SOL, USDC, and trending meme/utility tokens populating the transaction logs.`;
+}`;
 
     const promptContext = `Classification: ${payload.classification}\nIntent: ${payload.intent}\nLogs:\n${payload.rawLog.join("\n")}`;
 
@@ -291,7 +296,7 @@ Note: The sum of all asset percentages in portfolioRecommendation must equal exa
       let portfolioRecommendation: Record<string, number> = { "BTC": 40, "SOL": 30, "ETH": 20, "USDC": 10 };
       
       if (riskProfile === "DEGEN") {
-        portfolioRecommendation = { "SOL": 45, "POPCAT": 30, "WIF": 15, "USDC": 10 };
+        portfolioRecommendation = { "SOL": 45, "POPCAT": 30, "USDT": 15, "USDC": 10 };
       } else if (riskProfile === "DEFENSIVE") {
         portfolioRecommendation = { "USDC": 50, "BTC": 30, "ETH": 15, "OKB": 5 };
       }
@@ -385,7 +390,7 @@ export class WhaleWhisperAgent {
     let intent: IntentPayload["intent"] = "Accumulation";
 
     if (riskProfile === "DEGEN") {
-      portfolioRecommendation = { "SOL": 45, "POPCAT": 30, "WIF": 15, "USDC": 10 };
+      portfolioRecommendation = { "SOL": 45, "POPCAT": 30, "USDT": 15, "USDC": 10 };
       intent = "Arbitrage";
     } else if (riskProfile === "DEFENSIVE") {
       portfolioRecommendation = { "USDC": 50, "BTC": 30, "ETH": 15, "OKB": 5 };
