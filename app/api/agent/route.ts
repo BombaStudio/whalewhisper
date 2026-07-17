@@ -25,7 +25,7 @@ exactEvmScheme.registerMoneyParser(async (amount, network) => {
     const tokenAmount = Math.round(amount * 1_000_000).toString();
     return {
       amount: tokenAmount,
-      asset: "0x9e29b3aada05bf2d2c827af80bd28dc0b9b4fb0c", // Target test stablecoin address
+      asset: process.env.NEXT_PUBLIC_TESTNET_USDC_ADDRESS || "0xcb8bf24c6ce16ad21d707c9505421a17f2bec79d", // Target test stablecoin address
       extra: {
         name: "USD₮0",
         version: "1",
@@ -141,7 +141,11 @@ export async function POST(req: NextRequest) {
           payTo: process.env.SELLER_WALLET_ADDRESS || "0x742d35Cc6634C0532925a3b844Bc454e4438f44e", // ASP receiver address
           price: {
             amount: "10000", // 0.01 USDC (6 decimals = 10,000 units)
-            asset: process.env.NEXT_PUBLIC_TESTNET_USDC_ADDRESS || "0x9e29b3aada05bf2d2c827af80bd28dc0b9b4fb0c", // X Layer Testnet USDC
+            asset: process.env.NEXT_PUBLIC_TESTNET_USDC_ADDRESS || "0xcb8bf24c6ce16ad21d707c9505421a17f2bec79d", // X Layer Testnet USDC
+            extra: {
+              name: "USD₮0",
+              version: "1",
+            }
           },
           network: "eip155:195", // X Layer Testnet
         }

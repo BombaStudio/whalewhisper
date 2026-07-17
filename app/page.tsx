@@ -132,7 +132,7 @@ export default function Home() {
             else if (token.symbol === "ETH") tokenAddress = process.env.NEXT_PUBLIC_TESTNET_ETH_ADDRESS || "0x2222222222222222222222222222222222222222";
             else if (token.symbol === "SOL") tokenAddress = process.env.NEXT_PUBLIC_TESTNET_SOL_ADDRESS || "0x3333333333333333333333333333333333333333";
             else if (token.symbol === "POPCAT") tokenAddress = process.env.NEXT_PUBLIC_TESTNET_POPCAT_ADDRESS || "0x4444444444444444444444444444444444444444";
-            else if (token.symbol === "USDC") tokenAddress = process.env.NEXT_PUBLIC_TESTNET_USDC_ADDRESS || "0x9e29b3aada05bf2d2c827af80bd28dc0b9b4fb0c";
+            else if (token.symbol === "USDC") tokenAddress = process.env.NEXT_PUBLIC_TESTNET_USDC_ADDRESS || "0xcb8bf24c6ce16ad21d707c9505421a17f2bec79d";
             else if (token.symbol === "USDT") tokenAddress = process.env.NEXT_PUBLIC_TESTNET_USDT_ADDRESS || "0x67a15159048a1c8411c84b423f03b8420b9e29b4";
           }
           const balBI = await publicClient.readContract({
@@ -613,6 +613,82 @@ export default function Home() {
     const sellerAddress = (process.env.NEXT_PUBLIC_SELLER_WALLET_ADDRESS || process.env.SELLER_WALLET_ADDRESS || "0x742d35Cc6634C0532925a3b844Bc454e4438f44e") as `0x${string}`;
 
     try {
+      if (parseFloat(okbBalance) <= 0) {
+        throw new Error("Your connected wallet is empty. Please visit the Faucet at https://www.okx.com/en-sg/help/okx-ai-101 to claim free Testnet OKB.");
+      }
+
+      addLog("[Router] Initializing OKX x402 payment handshake for deployment authorization...");
+      await new Promise(r => setTimeout(r, 600));
+
+      let signer;
+      if (walletType === "sandbox") {
+        const pk = localStorage.getItem("whisper_sandbox_pk");
+        if (!pk) throw new Error("No sandbox private key found.");
+        const account = privateKeyToAccount(pk as `0x${string}`);
+        signer = toClientEvmSigner({
+          address: account.address,
+          signTypedData: async (msg) => {
+            return await account.signTypedData(msg as any);
+          }
+        });
+      } else {
+        const eth = (window as any).ethereum;
+        if (!eth) throw new Error("No injected Web3 provider detected.");
+        const walletClientForSign = createWalletClient({
+          account: address as `0x${string}`,
+          chain: {
+            id: 195,
+            name: "X Layer Testnet",
+            nativeCurrency: { name: "OKB", symbol: "OKB", decimals: 18 },
+            rpcUrls: {
+              default: { http: ["https://xlayertestrpc.okx.com"] },
+            },
+          },
+          transport: custom(eth)
+        });
+
+        signer = toClientEvmSigner({
+          address: address as `0x${string}`,
+          signTypedData: async (msg) => {
+            return await walletClientForSign.signTypedData({
+              account: address as `0x${string}`,
+              ...msg,
+            } as any);
+          }
+        });
+      }
+
+      if (!signer) {
+        throw new Error("Unable to construct EVM cryptographic signer for deployment payment.");
+      }
+
+      const fetchWithPay = wrapFetchWithPaymentFromConfig(window.fetch.bind(window), {
+        schemes: [
+          {
+            network: "eip155:195",
+            client: new ExactEvmScheme(signer),
+          }
+        ]
+      });
+
+      addLog("[Router] Charging $0.02 USDC deployment verification fee...");
+      const payResponse = await fetchWithPay("/api/deploy", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: "Portfolio deployment authorization" })
+      });
+
+      if (payResponse.status !== 200) {
+        const errText = await payResponse.text();
+        throw new Error(`Deployment payment verification failed: ${errText}`);
+      }
+
+      addLog("[Router] x402 payment settled! Deployment authorization confirmed.");
+      if (walletType === "sandbox") {
+        setUsdcBalance(prev => (parseFloat(prev) - 0.02).toFixed(2));
+      }
+      await new Promise(r => setTimeout(r, 600));
+
       addLog("[Router] Initiating portfolio rebalancing sequence...");
       await new Promise(r => setTimeout(r, 600));
 
@@ -677,6 +753,7 @@ export default function Home() {
           hash = await walletClient.sendTransaction({
             to: sellerAddress,
             value: BigInt("100000000000000"), // 0.0001 OKB in wei
+            gas: BigInt("21000")
           });
         } else {
           // ERC-20 contract approve
@@ -686,7 +763,7 @@ export default function Home() {
             else if (token.symbol === "ETH") tokenAddress = process.env.NEXT_PUBLIC_TESTNET_ETH_ADDRESS || "0x2222222222222222222222222222222222222222";
             else if (token.symbol === "SOL") tokenAddress = process.env.NEXT_PUBLIC_TESTNET_SOL_ADDRESS || "0x3333333333333333333333333333333333333333";
             else if (token.symbol === "POPCAT") tokenAddress = process.env.NEXT_PUBLIC_TESTNET_POPCAT_ADDRESS || "0x4444444444444444444444444444444444444444";
-            else if (token.symbol === "USDC") tokenAddress = process.env.NEXT_PUBLIC_TESTNET_USDC_ADDRESS || "0x9e29b3aada05bf2d2c827af80bd28dc0b9b4fb0c";
+            else if (token.symbol === "USDC") tokenAddress = process.env.NEXT_PUBLIC_TESTNET_USDC_ADDRESS || "0xcb8bf24c6ce16ad21d707c9505421a17f2bec79d";
             else if (token.symbol === "USDT") tokenAddress = process.env.NEXT_PUBLIC_TESTNET_USDT_ADDRESS || "0x67a15159048a1c8411c84b423f03b8420b9e29b4";
           }
           
@@ -697,7 +774,8 @@ export default function Home() {
 
           hash = await walletClient.sendTransaction({
             to: tokenAddress as `0x${string}`,
-            data: calldata
+            data: calldata,
+            gas: BigInt("65000")
           });
         }
 
@@ -997,7 +1075,7 @@ export default function Home() {
                       : "bg-black text-white hover:bg-zinc-800"
                   }`}
                 >
-                  {isDeployed ? "ALLOCATION DEPLOYED" : isDeploying ? "DEPLOYING TO TESTNET..." : "DEPLOY PORTFOLIO ON TESTNET (FREE)"}
+                  {isDeployed ? "ALLOCATION DEPLOYED" : isDeploying ? "DEPLOYING TO TESTNET..." : "DEPLOY PORTFOLIO ON TESTNET ($0.02 USDC)"}
                 </button>
               ) : (
                 <button
