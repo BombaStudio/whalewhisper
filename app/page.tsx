@@ -1,76 +1,66 @@
 "use client";
 
 import React, { useState, useEffect, useRef } from "react";
-import { motion, AnimatePresence } from "motion/react";
 import {
-  ArrowRight,
   Wallet,
   Coins,
   Shield,
   Activity,
   Cpu,
+  ArrowRight,
+  Terminal,
   RotateCcw,
-  Lock,
   ArrowUpRight,
-  Terminal
+  Lock
 } from "lucide-react";
 import { createWalletClient, custom } from "viem";
 import { privateKeyToAccount, generatePrivateKey } from "viem/accounts";
 import { wrapFetchWithPaymentFromConfig } from "@okxweb3/x402-fetch";
 import { ExactEvmScheme, toClientEvmSigner } from "@okxweb3/x402-evm";
 
-interface Message {
-  id: string;
-  sender: "user" | "agent";
-  text: string;
-  timestamp: string;
-  riskProfile?: "DEGEN" | "BALANCED" | "DEFENSIVE";
-  paymentDetails?: {
-    txHash?: string;
-    amount: string;
-    network: string;
-    scheme: string;
-  };
-}
-
 interface LogEntry {
-  id: string;
-  type: "info" | "success" | "warning" | "error";
   message: string;
+  type: "info" | "success" | "warning" | "error";
   timestamp: string;
 }
-
-const whaleList = [
-  { address: "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045", alias: "Vitalik Buterin", avatar: "VB", details: "Ethereum Founder, moves large chunks of ETH/ERC20 to exchanges." },
-  { address: "0x176F3DAb24a159341c0509bB36B833E7fdd0a132", alias: "Justin Sun", avatar: "JS", details: "Tron Founder, heavy stablecoin minting and staking operations." },
-  { address: "0x53461E4f60C1F855Bf0241B9cc2455854047a0D6", alias: "Arthur Hayes", avatar: "AH", details: "BitMEX Founder, accumulates mid-caps and high-growth L1 alts." },
-  { address: "0x7056d6428D811d04423a63eb4c360be1c4a03E1e", alias: "GCR (Legendary)", avatar: "GCR", details: "Top-tier trader, rotates heavily into leading ecosystem memes." },
-  { address: "0xe8c8441E95122FCE412850f443C78B96603a110D", alias: "Andrew Kang", avatar: "AK", details: "Mechanism Capital partner, specializes in high-conviction momentum plays." }
-];
 
 export default function Home() {
-  // Tabs state
-  const [activeTab, setActiveTab] = useState<"dashboard" | "chat">("dashboard");
+  // Config & State
+  const [riskProfile, setRiskProfile] = useState<"DEGEN" | "BALANCED" | "DEFENSIVE">("BALANCED");
+  const [timeframe, setTimeframe] = useState<"DAILY" | "WEEKLY" | "MONTHLY" | "YEARLY">("DAILY");
 
-  // Timeframe and Whale state
-  const [trackedWallets, setTrackedWallets] = useState<string[]>([
-    "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045", // Vitalik
-    "0x176F3DAb24a159341c0509bB36B833E7fdd0a132"  // Justin Sun
-  ]);
-  const [forceSandboxSign, setForceSandboxSign] = useState<boolean>(true);
-  const [whaleTransactions, setWhaleTransactions] = useState<any[]>([]);
-  const [isLoadingTxs, setIsLoadingTxs] = useState<boolean>(false);
-  const [selectedPortfolio, setSelectedPortfolio] = useState<"DEGEN" | "BALANCED" | "DEFENSIVE" | null>(null);
-  const [activeAllocation, setActiveAllocation] = useState<string | null>(null);
-  const [isDeploying, setIsDeploying] = useState<boolean>(false);
-  const [deploymentLogs, setDeploymentLogs] = useState<string[]>([]);
-
-  // Wallet state
+  // Wallet
   const [walletType, setWalletType] = useState<"none" | "sandbox" | "real">("none");
   const [address, setAddress] = useState<string>("");
   const [balance, setBalance] = useState<string>("0.00");
-  const [isConnecting, setIsConnecting] = useState(false);
+  const [isConnecting, setIsConnecting] = useState<boolean>(false);
+  const [forceSandboxSign, setForceSandboxSign] = useState<boolean>(true);
   const [showFaucetModal, setShowFaucetModal] = useState<boolean>(false);
+
+  // Agent Pipeline
+  const [isGenerating, setIsGenerating] = useState<boolean>(false);
+  const [agentStep, setAgentStep] = useState<number>(0); // 0: Idle, 1: Scan, 2: Sieve, 3: Intent, 4: Strategist, 5: Done
+  const [terminalLogs, setTerminalLogs] = useState<LogEntry[]>([]);
+  const [analysisResult, setAnalysisResult] = useState<{
+    classification: string;
+    intent: string;
+    rawLog: string[];
+    portfolioRecommendation: Record<string, number>;
+  } | null>(null);
+
+  // Deployment
+  const [isDeploying, setIsDeploying] = useState<boolean>(false);
+  const [deploymentLogs, setDeploymentLogs] = useState<string[]>([]);
+  const [isDeployed, setIsDeployed] = useState<boolean>(false);
+
+  const terminalEndRef = useRef<HTMLDivElement>(null);
+  const deployEndRef = useRef<HTMLDivElement>(null);
+
+  // Helper to add terminal logs
+  const addTerminalLog = (message: string, type: "info" | "success" | "warning" | "error" = "info") => {
+    const timestamp = new Date().toLocaleTimeString();
+    setTerminalLogs(prev => [...prev, { message, type, timestamp }]);
+  };
 
   // Fetch real on-chain USDC balance for the target address on X Layer Testnet
   const getERC20Balance = async (walletAddress: string): Promise<string> => {
@@ -109,135 +99,7 @@ export default function Home() {
     }
   };
 
-  // Chat state
-  const [input, setInput] = useState("");
-  const [riskProfile, setRiskProfile] = useState<"DEGEN" | "BALANCED" | "DEFENSIVE">("BALANCED");
-  const [timeframe, setTimeframe] = useState<"DAILY" | "WEEKLY" | "MONTHLY" | "YEARLY">("DAILY");
-  const [messages, setMessages] = useState<Message[]>([
-    {
-      id: "welcome",
-      sender: "agent",
-      text: "WhaleWhisper protocol initialized. Connect wallet and specify your risk appetite to receive blunt, data-backed portfolio allocations.",
-      timestamp: ""
-    }
-  ]);
-  const [isGenerating, setIsGenerating] = useState(false);
-
-  // Terminal Logs for demonstration
-  const [logs, setLogs] = useState<LogEntry[]>([
-    {
-      id: "log-1",
-      type: "info",
-      message: "WhaleWhisper ASP v2.0 listening on port 3000.",
-      timestamp: ""
-    },
-    {
-      id: "log-2",
-      type: "info",
-      message: "OKX x402 EVM Payment Module bound to eip155:195 (X Layer Testnet).",
-      timestamp: ""
-    }
-  ]);
-
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-  const logsEndRef = useRef<HTMLDivElement>(null);
-  const deploymentLogsEndRef = useRef<HTMLDivElement>(null);
-
-  // Markdown renderer utility
-  const renderMarkdown = (text: string) => {
-    const lines = text.split("\n");
-    let inTable = false;
-    let tableHeaders: string[] = [];
-    let tableRows: string[][] = [];
-
-    return lines.map((line, idx) => {
-      const trimmed = line.trim();
-      
-      if (trimmed.startsWith("|")) {
-        const parts = trimmed.split("|").map(p => p.trim()).filter((p, i, a) => i > 0 && i < a.length - 1);
-        if (trimmed.includes("---")) {
-          return null;
-        }
-        if (!inTable) {
-          inTable = true;
-          tableHeaders = parts;
-          return null;
-        } else {
-          tableRows.push(parts);
-          const nextLine = lines[idx + 1];
-          if (!nextLine || !nextLine.trim().startsWith("|")) {
-            inTable = false;
-            const rows = [...tableRows];
-            tableRows = [];
-            return (
-              <div key={`table-${idx}`} className="overflow-x-auto my-4 border border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">
-                <table className="min-w-full divide-y divide-black font-mono text-xs">
-                  <thead className="bg-zinc-100">
-                    <tr>
-                      {tableHeaders.map((h, i) => (
-                        <th key={i} className="px-4 py-2 border-r border-black font-bold text-left last:border-r-0">{h}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-black bg-white">
-                    {rows.map((row, rIdx) => (
-                      <tr key={rIdx}>
-                        {row.map((cell, cIdx) => (
-                          <td key={cIdx} className="px-4 py-2 border-r border-black last:border-r-0">{cell}</td>
-                        ))}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            );
-          }
-          return null;
-        }
-      }
-
-      if (trimmed.startsWith("###")) {
-        return <h4 key={idx} className="text-xs font-black uppercase tracking-wider mt-4 mb-2 font-mono border-b border-zinc-200 pb-1 text-black">{trimmed.replace(/###/g, "").trim()}</h4>;
-      }
-      if (trimmed.startsWith("##")) {
-        return <h3 key={idx} className="text-sm font-black uppercase tracking-wider mt-5 mb-2 font-mono border-b border-black pb-1 text-black">{trimmed.replace(/##/g, "").trim()}</h3>;
-      }
-      if (trimmed.startsWith("#")) {
-        return <h2 key={idx} className="text-base font-black uppercase tracking-wider mt-6 mb-3 font-mono text-black">{trimmed.replace(/#/g, "").trim()}</h2>;
-      }
-
-      if (trimmed.startsWith("-") || trimmed.startsWith("*")) {
-        return <li key={idx} className="text-xs list-disc list-inside ml-4 my-1 text-zinc-800 font-mono">{trimmed.substring(1).trim()}</li>;
-      }
-
-      if (trimmed === "") return <div key={idx} className="h-2"></div>;
-
-      return <p key={idx} className="text-xs leading-relaxed text-zinc-800 my-1 font-mono">{trimmed}</p>;
-    }).filter(el => el !== null);
-  };
-
-  // Scroll utilities
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, isGenerating]);
-
-  useEffect(() => {
-    logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [logs]);
-
-  useEffect(() => {
-    // Scroll deployment logs if active
-    deploymentLogsEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [deploymentLogs, isDeploying]);
-
-  useEffect(() => {
-    // Populate client-side timestamps on mount to prevent hydration mismatch
-    const clientTime = new Date().toLocaleTimeString();
-    setMessages(prev => prev.map(m => m.id === "welcome" ? { ...m, timestamp: clientTime } : m));
-    setLogs(prev => prev.map(l => l.id.startsWith("log-") ? { ...l, timestamp: clientTime } : l));
-  }, []);
-
-  // Update real-time wallet balance on X Layer Testnet
+  // Balance polling effect
   useEffect(() => {
     let active = true;
     const updateBalance = async () => {
@@ -245,7 +107,7 @@ export default function Home() {
       if (walletType === "real") {
         activeAddr = address;
       } else if (walletType === "sandbox" || forceSandboxSign) {
-        let pk = localStorage.getItem("whisper_sandbox_pk");
+        const pk = localStorage.getItem("whisper_sandbox_pk");
         if (pk) {
           try {
             activeAddr = privateKeyToAccount(pk as `0x${string}`).address;
@@ -273,203 +135,80 @@ export default function Home() {
       active = false;
       clearInterval(interval);
     };
-  }, [address, walletType, forceSandboxSign]);
+  }, [walletType, address, forceSandboxSign]);
 
-  // Fetch real on-chain transactions for tracked whales
+  // Listen for MetaMask/OKX wallet account and chain changes dynamically
   useEffect(() => {
-    let active = true;
-    const fetchTxs = async () => {
-      if (trackedWallets.length === 0) {
-        if (active) setWhaleTransactions([]);
-        return;
-      }
-      setIsLoadingTxs(true);
-      
-      const alchemyKey = process.env.NEXT_PUBLIC_ALCHEMY_API_KEY;
-      if (alchemyKey) {
-        addLog("Querying Alchemy Asset Transfers API for live whale transaction updates...", "info");
+    if (typeof window === "undefined" || walletType !== "real") return;
+
+    const eth = (window as any).ethereum;
+    if (!eth) return;
+
+    const handleAccounts = async (accounts: string[]) => {
+      if (accounts && accounts.length > 0) {
+        setAddress(accounts[0]);
+        const bal = await getERC20Balance(accounts[0]);
+        setBalance(bal);
+        addTerminalLog(`Active wallet account updated: ${accounts[0]}`, "info");
       } else {
-        addLog("Querying Blockscout for live whale transaction updates...", "info");
-      }
-      
-      try {
-        const txPromises = trackedWallets.map(async (address) => {
-          const whale = whaleList.find(w => w.address.toLowerCase() === address.toLowerCase());
-          const alias = whale ? whale.alias : "Unknown Whale";
-
-          if (alchemyKey) {
-            // Retrieve using Alchemy JSON-RPC asset transfers API on Ethereum Mainnet
-            const res = await fetch(`https://eth-mainnet.g.alchemy.com/v2/${alchemyKey}`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                jsonrpc: "2.0",
-                id: 1,
-                method: "alchemy_getAssetTransfers",
-                params: [
-                  {
-                    fromAddress: address,
-                    category: ["external", "erc20"],
-                    maxCount: 5,
-                    order: "desc",
-                    excludeZeroValue: true
-                  }
-                ]
-              })
-            });
-            if (!res.ok) {
-              throw new Error(`Alchemy API returned status ${res.status}`);
-            }
-            const json = await res.json();
-            if (json.error) {
-              throw new Error(json.error.message || "Alchemy RPC error");
-            }
-            const transfers = json.result?.transfers || [];
-            
-            return transfers.map((tx: any) => {
-              const isFromWhale = tx.from?.toLowerCase() === address.toLowerCase();
-              const txTime = tx.metadata?.blockTimestamp ? new Date(tx.metadata.blockTimestamp) : new Date();
-              const diffMs = Date.now() - txTime.getTime();
-              const diffMins = Math.floor(diffMs / 60000);
-              const diffHours = Math.floor(diffMins / 60);
-              const diffDays = Math.floor(diffHours / 24);
-              
-              let timeStr = txTime.toLocaleDateString();
-              if (diffMins < 60) {
-                timeStr = `${Math.max(1, diffMins)} mins ago`;
-              } else if (diffHours < 24) {
-                timeStr = `${diffHours} hours ago`;
-              } else if (diffDays < 30) {
-                timeStr = `${diffDays} days ago`;
-              }
-
-              const value = tx.value || 0;
-              const asset = tx.asset || "ETH";
-              
-              // Estimate USD Value
-              let usdPrice = 1;
-              if (asset === "ETH" || asset === "WETH") usdPrice = 3420;
-              else if (asset === "USDC" || asset === "USDT" || asset === "DAI") usdPrice = 1;
-              else if (asset === "WBTC") usdPrice = 64000;
-              else usdPrice = 150; // mid-cap default estimate
-              
-              const usdValue = `$${(value * usdPrice).toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
-
-              return {
-                wallet: address,
-                alias,
-                action: isFromWhale ? "SELL" : "BUY",
-                asset,
-                amount: `${value.toLocaleString(undefined, { maximumFractionDigits: 4 })} ${asset}`,
-                usdValue,
-                timestamp: timeStr,
-                txHash: tx.hash
-              };
-            });
-          } else {
-            // Fallback to public Blockscout API
-            const response = await fetch(`https://eth.blockscout.com/api/v2/addresses/${address}/transactions`);
-            if (!response.ok) {
-              console.warn(`Blockscout failed for ${address}: ${response.status}`);
-              return [];
-            }
-            const data = await response.json();
-            const items = data.items || [];
-            
-            return items.slice(0, 5).map((tx: any) => {
-              const isFromWhale = tx.from?.hash?.toLowerCase() === address.toLowerCase();
-              
-              let amount = "0";
-              let asset = "ETH";
-              let usdValue = "$0";
-              
-              if (tx.token_transfers && tx.token_transfers.length > 0) {
-                const transfer = tx.token_transfers[0];
-                const decimals = parseInt(transfer.token?.decimals || "18");
-                const rawVal = BigInt(transfer.total?.value || "0");
-                const formattedVal = (Number(rawVal) / Math.pow(10, decimals));
-                amount = formattedVal.toLocaleString(undefined, { maximumFractionDigits: 4 });
-                asset = transfer.token?.symbol || "ERC-20";
-                const tokenPrice = parseFloat(transfer.token?.exchange_rate || "0");
-                usdValue = tokenPrice > 0 ? `$${(formattedVal * tokenPrice).toLocaleString(undefined, { maximumFractionDigits: 0 })}` : "N/A";
-              } else {
-                const rawVal = BigInt(tx.value || "0");
-                const formattedVal = (Number(rawVal) / 1e18);
-                amount = formattedVal.toLocaleString(undefined, { maximumFractionDigits: 4 });
-                asset = "ETH";
-                usdValue = `$${(formattedVal * 3420).toLocaleString(undefined, { maximumFractionDigits: 0 })}`; // Est ETH Price
-              }
-
-              const txTime = new Date(tx.timestamp);
-              const diffMs = Date.now() - txTime.getTime();
-              const diffMins = Math.floor(diffMs / 60000);
-              const diffHours = Math.floor(diffMins / 60);
-              const diffDays = Math.floor(diffHours / 24);
-              
-              let timeStr = txTime.toLocaleDateString();
-              if (diffMins < 60) {
-                timeStr = `${Math.max(1, diffMins)} mins ago`;
-              } else if (diffHours < 24) {
-                timeStr = `${diffHours} hours ago`;
-              } else if (diffDays < 30) {
-                timeStr = `${diffDays} days ago`;
-              }
-
-              return {
-                wallet: address,
-                alias,
-                action: isFromWhale ? "SELL" : "BUY",
-                asset,
-                amount: `${amount} ${asset}`,
-                usdValue,
-                timestamp: timeStr,
-                txHash: tx.hash
-              };
-            });
-          }
-        });
-
-        const allResults = await Promise.all(txPromises);
-        const merged = allResults.flat();
-        
-        if (active) {
-          setWhaleTransactions(merged);
-          addLog(`Live transaction index synchronized: ${merged.length} transactions captured.`, "success");
-        }
-      } catch (err: any) {
-        console.error(err);
-        if (active) {
-          addLog(`Explorer query failed: ${err.message}`, "error");
-        }
-      } finally {
-        if (active) setIsLoadingTxs(false);
+        setWalletType("none");
+        setAddress("");
+        setBalance("0.00");
+        addTerminalLog("Wallet account disconnected from MetaMask.", "warning");
       }
     };
 
-    fetchTxs();
+    const handleChain = async (chainIdHex: string) => {
+      const chainId = parseInt(chainIdHex, 16);
+      addTerminalLog(`Active chain changed to ID: ${chainId}`, "info");
+      if (chainId !== 195) {
+        addTerminalLog("Target network mismatch. Switch target in wallet UI to X Layer Testnet.", "warning");
+      }
+      if (address) {
+        const bal = await getERC20Balance(address);
+        setBalance(bal);
+      }
+    };
+
+    eth.on("accountsChanged", handleAccounts);
+    eth.on("chainChanged", handleChain);
 
     return () => {
-      active = false;
-    };
-  }, [trackedWallets, timeframe]);
-
-  // Add terminal log helper
-  const addLog = (message: string, type: "info" | "success" | "warning" | "error" = "info") => {
-    setLogs((prev) => [
-      ...prev,
-      {
-        id: `log-${Date.now()}-${Math.random()}`,
-        type,
-        message,
-        timestamp: new Date().toLocaleTimeString()
+      if (eth.removeListener) {
+        eth.removeListener("accountsChanged", handleAccounts);
+        eth.removeListener("chainChanged", handleChain);
       }
-    ]);
-  };
+    };
+  }, [walletType, address]);
 
-  // Setup / Restore Sandbox Wallet
+  // Auto detect active injected wallet session on mount
+  useEffect(() => {
+    const autoDetect = async () => {
+      if (typeof window === "undefined") return;
+      const eth = (window as any).ethereum;
+      if (eth) {
+        try {
+          const accounts = await eth.request({ method: "eth_accounts" });
+          if (accounts && accounts.length > 0) {
+            setAddress(accounts[0]);
+            setWalletType("real");
+            setForceSandboxSign(false);
+            const bal = await getERC20Balance(accounts[0]);
+            setBalance(bal);
+            addTerminalLog(`Injected wallet session restored: ${accounts[0]}`, "success");
+          }
+        } catch (err) {
+          console.error("Auto detect failed:", err);
+        }
+      }
+    };
+    autoDetect();
+  }, []);
+
+  // Connect Sandbox
   const connectSandbox = () => {
     setIsConnecting(true);
-    addLog("Initializing local sandbox secure keypair...", "info");
+    addTerminalLog("Initializing local sandbox secure keypair...", "info");
     
     setTimeout(() => {
       let privKey = localStorage.getItem("whisper_sandbox_pk");
@@ -482,32 +221,31 @@ export default function Home() {
         const account = privateKeyToAccount(privKey as `0x${string}`);
         setAddress(account.address);
         setWalletType("sandbox");
-        setBalance("10.00"); // Pre-fund simulation
-        addLog(`Sandbox wallet instantiated: ${account.address}`, "success");
-        addLog("Pre-funded with $10.00 mock USDC on eip155:195 (X Layer Testnet).", "success");
+        setForceSandboxSign(true);
+        addTerminalLog(`Sandbox wallet loaded: ${account.address}`, "success");
       } catch (err: any) {
-        addLog(`Failed to create sandbox wallet: ${err.message}`, "error");
+        addTerminalLog(`Failed to create sandbox wallet: ${err.message}`, "error");
       } finally {
         setIsConnecting(false);
       }
     }, 800);
   };
 
-  // Connect Real Extension Wallet (OKX / Metamask)
+  // Connect Real Wallet
   const connectReal = async () => {
     if (typeof window === "undefined") return;
     setIsConnecting(true);
-    addLog("Detecting injected Web3 wallet...", "info");
+    addTerminalLog("Detecting injected Web3 wallet...", "info");
 
     const eth = (window as any).ethereum;
     if (!eth) {
-      addLog("No injected Web3 Wallet detected. Please install OKX Web3 Wallet.", "error");
+      addTerminalLog("No injected Web3 Wallet detected. Please install OKX Web3 Wallet.", "error");
       setIsConnecting(false);
       return;
     }
 
     try {
-      addLog("Requesting wallet connection...", "info");
+      addTerminalLog("Requesting wallet connection...", "info");
       const accounts = await eth.request({ method: "eth_requestAccounts" });
       if (accounts && accounts.length > 0) {
         setAddress(accounts[0]);
@@ -515,12 +253,12 @@ export default function Home() {
         setForceSandboxSign(false);
         const realBal = await getERC20Balance(accounts[0]);
         setBalance(realBal);
-        addLog(`Connected browser wallet: ${accounts[0]}`, "success");
+        addTerminalLog(`Connected browser wallet: ${accounts[0]}`, "success");
       } else {
-        addLog("Wallet connection rejected by user.", "warning");
+        addTerminalLog("Wallet connection rejected by user.", "warning");
       }
     } catch (err: any) {
-      addLog(`Wallet connection error: ${err.message}`, "error");
+      addTerminalLog(`Wallet connection error: ${err.message}`, "error");
     } finally {
       setIsConnecting(false);
     }
@@ -531,21 +269,18 @@ export default function Home() {
     setWalletType("none");
     setAddress("");
     setBalance("0.00");
-    addLog("Wallet session disconnected.", "warning");
+    addTerminalLog("Wallet session disconnected.", "warning");
   };
 
-  // Send query & handle X402 payment flow
-  const sendMessage = async (e?: React.FormEvent, customText?: string) => {
-    if (e) e.preventDefault();
-    
-    const userText = customText || input;
-    if (!userText.trim() || isGenerating) return;
+  // Trigger x402 payment and sequential agent pipeline
+  const runAnalysis = async () => {
+    if (isGenerating) return;
 
     const eth = (window as any).ethereum;
     let currentAddress = address;
     let currentWalletType = walletType;
 
-    // Detect window.ethereum and connect user's wallet if they submit their first prompt but haven't connected
+    // Auto connect sandbox if forceSandboxSign is set and no wallet connected
     if (currentWalletType === "none") {
       if (forceSandboxSign) {
         let privKey = localStorage.getItem("whisper_sandbox_pk");
@@ -560,9 +295,9 @@ export default function Home() {
         setWalletType("sandbox");
         const realBal = await getERC20Balance(account.address);
         setBalance(realBal);
-        addLog(`Sandbox wallet auto-instantiated: ${account.address}`, "success");
+        addTerminalLog(`Sandbox wallet auto-instantiated: ${account.address}`, "success");
       } else if (eth) {
-        addLog("No active wallet session. Attempting auto-connection via injected Web3 provider...", "info");
+        addTerminalLog("No active wallet session. Attempting auto-connection via injected Web3 provider...", "info");
         try {
           const accounts = await eth.request({ method: "eth_requestAccounts" });
           if (accounts && accounts.length > 0) {
@@ -572,25 +307,25 @@ export default function Home() {
             setWalletType("real");
             const realBal = await getERC20Balance(accounts[0]);
             setBalance(realBal);
-            addLog(`Connected browser wallet: ${accounts[0]}`, "success");
+            addTerminalLog(`Connected browser wallet: ${accounts[0]}`, "success");
           } else {
-            addLog("Wallet connection rejected by user.", "error");
+            addTerminalLog("Wallet connection rejected by user.", "error");
             alert("Please connect a wallet first.");
             return;
           }
         } catch (err: any) {
-          addLog(`Wallet connection error: ${err.message}`, "error");
+          addTerminalLog(`Wallet connection error: ${err.message}`, "error");
           alert("Wallet connection is required to authorize the payment handshake.");
           return;
         }
       } else {
-        addLog("Authentication failed: No injected Web3 provider detected.", "error");
+        addTerminalLog("Authentication failed: No injected Web3 provider detected.", "error");
         alert("Please install OKX Web3 Wallet or MetaMask, or select Sandbox mode.");
         return;
       }
     }
 
-    // Verify testnet USDC balance before starting EIP-402 payment
+    // Verify balance
     let activeAddr = currentAddress;
     if (currentWalletType === "sandbox") {
       const pk = localStorage.getItem("whisper_sandbox_pk");
@@ -600,38 +335,29 @@ export default function Home() {
         } catch {}
       }
     }
-    
+
     let currentBalanceStr = balance;
     if (activeAddr) {
       currentBalanceStr = await getERC20Balance(activeAddr);
       setBalance(currentBalanceStr);
     }
-    
+
     const balanceNum = parseFloat(currentBalanceStr);
     if (balanceNum < 0.01) {
       setShowFaucetModal(true);
-      addLog(`Analysis aborted: insufficient balance (${currentBalanceStr} USDC). Claims required from the faucet.`, "error");
+      addTerminalLog(`Analysis aborted: insufficient balance (${currentBalanceStr} USDC). Claims required from the faucet.`, "error");
       return;
     }
 
-    if (!customText) {
-      setInput("");
-    }
+    // Reset pipeline state
     setIsGenerating(true);
+    setAgentStep(1);
+    setAnalysisResult(null);
+    setIsDeployed(false);
+    setDeploymentLogs([]);
+    setTerminalLogs([]);
 
-    // 1. Append user message to log
-    setMessages((prev) => [
-      ...prev,
-      {
-        id: `user-${Date.now()}`,
-        sender: "user",
-        text: userText,
-        timestamp: new Date().toLocaleTimeString(),
-        riskProfile
-      }
-    ]);
-
-    addLog(`Initiating portfolio request for [${riskProfile}] profile over [${timeframe}] timeframe...`, "info");
+    addTerminalLog("Initializing OKX x402 payment handshake on eip155:195 (X Layer Testnet)...", "info");
 
     try {
       let signer;
@@ -663,21 +389,19 @@ export default function Home() {
           transport: custom(eth)
         });
 
-        // Automatic network switching to X Layer Testnet (Chain ID: 195)
+        // Switch to X Layer Testnet
         const currentChainId = await walletClient.getChainId();
         if (currentChainId !== 195) {
           try {
-            addLog("Target network mismatch. Switching to X Layer Testnet (Chain ID 195)...", "info");
+            addTerminalLog("Switching chain to X Layer Testnet...", "info");
             await walletClient.switchChain({ id: 195 });
           } catch (err: any) {
-            // Attempt to add chain if not added
             if (err.code === 4902) {
-              addLog("X Layer Testnet not found. Adding network parameters...", "info");
               await eth.request({
                 method: "wallet_addEthereumChain",
                 params: [
                   {
-                    chainId: "0xc3", // 195 in hex
+                    chainId: "0xc3",
                     chainName: "X Layer Testnet",
                     nativeCurrency: { name: "OKB", symbol: "OKB", decimals: 18 },
                     rpcUrls: ["https://xlayertestrpc.okx.com"],
@@ -691,7 +415,6 @@ export default function Home() {
           }
         }
 
-        // Convert the Viem client into an EVM signer
         signer = toClientEvmSigner({
           address: currentAddress as `0x${string}`,
           signTypedData: async (msg) => {
@@ -707,8 +430,6 @@ export default function Home() {
         throw new Error("Unable to construct EVM cryptographic signer.");
       }
 
-      // Wrap the native fetch with wrapFetchWithPaymentFromConfig from @okxweb3/x402-fetch
-      // Register "eip155:195" (X Layer Testnet) using new ExactEvmScheme(signer)
       const fetchWithPay = wrapFetchWithPaymentFromConfig(window.fetch.bind(window), {
         schemes: [
           {
@@ -718,945 +439,459 @@ export default function Home() {
         ]
       });
 
-      addLog("Sending POST to /api/agent...", "info");
-      addLog("Detecting payment required challenge headers...", "info");
+      addTerminalLog("Broadcasting EIP-402 challenge request...", "info");
 
-      // Wrap the fetch call
       const response = await fetchWithPay("/api/agent", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          message: userText,
-          riskProfile: riskProfile,
-          timeframe: timeframe,
-          transactions: whaleTransactions
+          message: `Perform Multi-Agent sequential search for ${riskProfile} risk target`,
+          riskProfile,
+          timeframe,
+          transactions: [] // ScannerAgent parses mock or fetches dynamically
         })
       });
 
       if (response.status === 200) {
-        addLog("Payment validation passed. OKX x402 settlement validated by resource server.", "success");
-        addLog("Transaction settled! Authorization: x402-token verification success.", "success");
-        
-        // Deduct simulated balance if sandbox
+        addTerminalLog("x402 payment settled! Verification token accepted.", "success");
         if (currentWalletType === "sandbox") {
-          setBalance((prev) => (parseFloat(prev) - 0.01).toFixed(2));
+          setBalance(prev => (parseFloat(prev) - 0.01).toFixed(2));
         }
 
         const data = await response.json();
+        const parsedResult = JSON.parse(data.analysis);
         
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: `agent-${Date.now()}`,
-            sender: "agent",
-            text: data.analysis || "Analysis received, but no content was returned.",
-            timestamp: new Date().toLocaleTimeString(),
-            paymentDetails: {
-              amount: "$0.01 USDC",
-              network: "eip155:195 (X Layer Testnet)",
-              scheme: "exact-evm"
-            }
-          }
-        ]);
-        addLog("WhaleWhisper analysis compiled & rendered.", "success");
+        // Execute visual sequential stream of agents
+        streamAgentPipeline(parsedResult);
       } else {
         const errText = await response.text();
-        addLog(`Resource server rejected request: ${errText}`, "error");
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: `agent-error-${Date.now()}`,
-            sender: "agent",
-            text: `Payment protocol handshake failed: ${errText || "Please retry."}`,
-            timestamp: new Date().toLocaleTimeString()
-          }
-        ]);
+        addTerminalLog(`Resource Server returned error: ${errText}`, "error");
+        setIsGenerating(false);
+        setAgentStep(0);
       }
+
     } catch (err: any) {
-      console.error(err);
-      addLog(`Payment/Agent execution failed: ${err.message}`, "error");
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: `agent-err-${Date.now()}`,
-          sender: "agent",
-          text: `An error occurred during cryptographic signature or routing: ${err.message}`,
-          timestamp: new Date().toLocaleTimeString()
-        }
-      ]);
-    } finally {
+      addTerminalLog(`Pipeline execution failure: ${err.message}`, "error");
       setIsGenerating(false);
+      setAgentStep(0);
     }
   };
 
-  // Pre-configured allocation portfolios mapping to our live strategy Matrix
-  const getPortfolioAllocations = () => {
-    switch (riskProfile) {
-      case "DEGEN":
-        return [
-          { token: "SOL", ratio: "60%" },
-          { token: "POPCAT", ratio: "30%" },
-          { token: "USDC", ratio: "10%" }
-        ];
-      case "DEFENSIVE":
-        return [
-          { token: "USDC", ratio: "70%" },
-          { token: "SOL", ratio: "20%" },
-          { token: "ETH", ratio: "10%" }
-        ];
-      case "BALANCED":
-      default:
-        return [
-          { token: "SOL", ratio: "40%" },
-          { token: "BTC", ratio: "40%" },
-          { token: "ETH", ratio: "20%" }
-        ];
-    }
+  // Sequential log streaming simulation
+  const streamAgentPipeline = (result: any) => {
+    // Phase 1: ScannerAgent
+    setAgentStep(1);
+    addTerminalLog("[1] ScannerAgent: Persona - Analytical on-chain data retrieval specialist.", "info");
+    addTerminalLog("[1] ScannerAgent: Scanning EVM mainnet whale patterns...", "info");
+    
+    setTimeout(() => {
+      addTerminalLog("[1] ScannerAgent: Parsing sender, receiver, values, and token contracts...", "info");
+      result.rawLog.forEach((log: string) => {
+        addTerminalLog(`[1] ScannerAgent: Found ${log}`, "success");
+      });
+
+      // Phase 2: SieveAgent
+      setTimeout(() => {
+        setAgentStep(2);
+        addTerminalLog("[2] SieveAgent: Persona - Hardened forensic blockchain investigator.", "info");
+        addTerminalLog("[2] SieveAgent: Evaluating parsed wallet volumes and rotation activity...", "info");
+        
+        setTimeout(() => {
+          addTerminalLog(`[2] SieveAgent: Wallet classification outcome -> ${result.classification}`, "success");
+
+          // Phase 3: IntentAgent
+          setTimeout(() => {
+            setAgentStep(3);
+            addTerminalLog("[3] IntentAgent: Persona - Behavioral market psychologist.", "info");
+            addTerminalLog("[3] IntentAgent: Deciphering transfer intention and profit-taking bounds...", "info");
+            
+            setTimeout(() => {
+              addTerminalLog(`[3] IntentAgent: Detected target behavior intent -> ${result.intent}`, "success");
+
+              // Phase 4: StrategistAgent
+              setTimeout(() => {
+                setAgentStep(4);
+                addTerminalLog("[4] StrategistAgent: Persona - Quantitative crypto portfolio strategist.", "info");
+                addTerminalLog(`[4] StrategistAgent: Consolidating findings for risk appetite: ${riskProfile}...`, "info");
+                
+                setTimeout(() => {
+                  addTerminalLog("[4] StrategistAgent: Formulating optimized portfolio ratios...", "success");
+                  addTerminalLog("[4] StrategistAgent: Pipeline execution complete. Final values unlocked.", "success");
+                  
+                  // Final Reveal
+                  setAnalysisResult(result);
+                  setAgentStep(5);
+                  setIsGenerating(false);
+                }, 1000);
+              }, 1000);
+            }, 1000);
+          }, 1000);
+        }, 1000);
+      }, 1200);
+    }, 1500);
   };
-  const getWhaleTransactions = () => {
-    const allTxs = [
-      {
-        wallet: "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
-        alias: "Vitalik Buterin",
-        action: "WITHDRAW",
-        asset: "ETH",
-        amount: timeframe === "DAILY" ? "250 ETH" : timeframe === "WEEKLY" ? "1,300 ETH" : timeframe === "MONTHLY" ? "5,600 ETH" : "33,000 ETH",
-        usdValue: timeframe === "DAILY" ? "$480K" : timeframe === "WEEKLY" ? "$2.5M" : timeframe === "MONTHLY" ? "$10.8M" : "$63M",
-        timestamp: timeframe === "DAILY" ? "12 mins ago" : timeframe === "WEEKLY" ? "2 days ago" : timeframe === "MONTHLY" ? "12 days ago" : "2 months ago"
-      },
-      {
-        wallet: "0x176F3DAb24a159341c0509bB36B833E7fdd0a132",
-        alias: "Justin Sun",
-        action: "DEPOSIT",
-        asset: "USDT",
-        amount: timeframe === "DAILY" ? "12M USDT" : timeframe === "WEEKLY" ? "62M USDT" : timeframe === "MONTHLY" ? "270M USDT" : "1.6B USDT",
-        usdValue: timeframe === "DAILY" ? "$12.0M" : timeframe === "WEEKLY" ? "$62.0M" : timeframe === "MONTHLY" ? "$270.0M" : "$1.6B",
-        timestamp: timeframe === "DAILY" ? "28 mins ago" : timeframe === "WEEKLY" ? "1 day ago" : timeframe === "MONTHLY" ? "5 days ago" : "1 month ago"
-      },
-      {
-        wallet: "0x53461E4f60C1F855Bf0241B9cc2455854047a0D6",
-        alias: "Arthur Hayes",
-        action: "BUY",
-        asset: "SOL",
-        amount: timeframe === "DAILY" ? "2,500 SOL" : timeframe === "WEEKLY" ? "13,000 SOL" : timeframe === "MONTHLY" ? "56,000 SOL" : "330,000 SOL",
-        usdValue: timeframe === "DAILY" ? "$360K" : timeframe === "WEEKLY" ? "$1.9M" : timeframe === "MONTHLY" ? "$8.1M" : "$48M",
-        timestamp: timeframe === "DAILY" ? "2 hours ago" : timeframe === "WEEKLY" ? "4 days ago" : timeframe === "MONTHLY" ? "18 days ago" : "5 months ago"
-      },
-      {
-        wallet: "0x7056d6428D811d04423a63eb4c360be1c4a03E1e",
-        alias: "GCR (Legendary)",
-        action: "SWAP",
-        asset: "POPCAT",
-        amount: timeframe === "DAILY" ? "1.5M POPCAT" : timeframe === "WEEKLY" ? "7.8M POPCAT" : timeframe === "MONTHLY" ? "33M POPCAT" : "200M POPCAT",
-        usdValue: timeframe === "DAILY" ? "$970K" : timeframe === "WEEKLY" ? "$5.1M" : timeframe === "MONTHLY" ? "$21M" : "$130M",
-        timestamp: timeframe === "DAILY" ? "45 mins ago" : timeframe === "WEEKLY" ? "3 days ago" : timeframe === "MONTHLY" ? "14 days ago" : "3 months ago"
-      },
-      {
-        wallet: "0xe8c8441E95122FCE412850f443C78B96603a110D",
-        alias: "Andrew Kang",
-        action: "SWAP",
-        asset: "WIF",
-        amount: timeframe === "DAILY" ? "450K WIF" : timeframe === "WEEKLY" ? "2.3M WIF" : timeframe === "MONTHLY" ? "10M WIF" : "60M WIF",
-        usdValue: timeframe === "DAILY" ? "$830K" : timeframe === "WEEKLY" ? "$4.2M" : timeframe === "MONTHLY" ? "$18M" : "$110M",
-        timestamp: timeframe === "DAILY" ? "4 hours ago" : timeframe === "WEEKLY" ? "2 days ago" : timeframe === "MONTHLY" ? "8 days ago" : "2 months ago"
-      }
+
+  // Simulate local free testnet portfolio deployment
+  const deployPortfolio = () => {
+    if (isDeploying || isDeployed || !analysisResult) return;
+    setIsDeploying(true);
+    setDeploymentLogs([]);
+
+    const logsStream = [
+      "Connecting to X Layer Testnet node (https://xlayertestrpc.okx.com)...",
+      "Assembling smart contract deployment parameters...",
+      "Encoding portfolio allocation structures...",
+      `Allocating portfolio: ${Object.entries(analysisResult.portfolioRecommendation)
+        .map(([asset, percentage]) => `${asset} (${percentage}%)`)
+        .join(", ")}`,
+      "Signing local contract execution payload...",
+      "Transaction broadcasted to X Layer mempool...",
+      "Waiting for receipt confirmations...",
+      `Successfully deployed target allocation! Transaction hash: 0x${Math.random().toString(16).substring(2, 10)}${Math.random().toString(16).substring(2, 10)}b87195`
     ];
-    return allTxs.filter(tx => trackedWallets.includes(tx.wallet));
+
+    let currentLogIdx = 0;
+    const interval = setInterval(() => {
+      if (currentLogIdx < logsStream.length) {
+        setDeploymentLogs(prev => [...prev, logsStream[currentLogIdx]]);
+        currentLogIdx++;
+      } else {
+        clearInterval(interval);
+        setIsDeploying(false);
+        setIsDeployed(true);
+      }
+    }, 800);
   };
 
-  const generateTimeframePortfolio = () => {
-    if (isGenerating) return;
-    const trackedNames = whaleList.filter(w => trackedWallets.includes(w.address)).map(w => w.alias).join(", ");
-    const prompt = `Analyze whale movements over the last ${timeframe.toLowerCase()} for the following tracked wallets: ${trackedNames || "None"}. Provide a portfolio allocation for a ${riskProfile} profile.`;
-    sendMessage(undefined, prompt);
-  };
+  // Scroll to bottom of log containers
+  useEffect(() => {
+    terminalEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [terminalLogs]);
 
-  const hasAnalyzed = messages.some(m => m.sender === "agent" && m.id !== "welcome");
+  useEffect(() => {
+    deployEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [deploymentLogs]);
 
   return (
-    <main className="min-h-screen bg-white text-black font-sans flex flex-col antialiased relative">
-      {/* Background architectural design overlay */}
-      <div className="absolute inset-0 pointer-events-none opacity-[0.02] bg-[linear-gradient(to_right,#000_1px,transparent_1px),linear-gradient(to_bottom,#000_1px,transparent_1px)] bg-[size:4rem_4rem]"></div>
-
-      {/* Header Section (Bold Typography Theme style) */}
-      <header className="flex flex-col md:flex-row justify-between items-start md:items-end p-8 md:p-10 border-b border-black gap-6 z-10 bg-white">
-        <div className="space-y-2">
-          <h1 className="text-4xl md:text-5xl font-black tracking-tighter leading-none uppercase font-display">
-            WhaleWhisper
-          </h1>
-          <p className="text-[10px] md:text-xs tracking-[0.2em] font-bold text-zinc-500 uppercase font-mono">
-            On-Chain Intelligence Agent / X-Layer Protocol
-          </p>
+    <div className="min-h-screen bg-white text-black font-sans selection:bg-black selection:text-white flex flex-col">
+      {/* Swiss Header */}
+      <header className="border-b border-black py-6 px-8 md:px-12 flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-white">
+        <div>
+          <h1 className="text-lg font-black tracking-tighter font-mono">WHALE WHISPER // PROTOCOL</h1>
+          <p className="text-xs text-zinc-500 font-mono uppercase tracking-wider mt-0.5">Multi-Agent On-Chain Intelligence Pipeline</p>
         </div>
 
-        <div className="flex flex-wrap gap-6 md:gap-10 text-left md:text-right font-mono">
-          <div className="space-y-1">
-            <p className="text-[9px] uppercase tracking-widest text-zinc-400 font-bold">Network</p>
-            <p className="text-xs md:text-sm font-black">EIP155:196</p>
+        <div className="flex flex-wrap items-center gap-4">
+          <div className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              id="bypassSign"
+              checked={forceSandboxSign}
+              onChange={(e) => setForceSandboxSign(e.target.checked)}
+              className="w-3.5 h-3.5 accent-black cursor-pointer"
+            />
+            <label htmlFor="bypassSign" className="text-xs font-mono select-none cursor-pointer uppercase text-zinc-600">
+              Bypass Real Signer
+            </label>
           </div>
-          <div className="space-y-1">
-            <p className="text-[9px] uppercase tracking-widest text-zinc-400 font-bold">Cost</p>
-            <p className="text-xs md:text-sm font-black text-emerald-600">$0.01 USDC</p>
-          </div>
-          <div className="space-y-1">
-            <p className="text-[9px] uppercase tracking-widest text-zinc-400 font-bold">Status</p>
-            <div className="flex items-center gap-1.5 md:justify-end">
-              <span className={`w-2 h-2 rounded-full ${walletType !== "none" ? "bg-emerald-500" : "bg-red-500"}`} />
-              <p className="text-xs md:text-sm font-black uppercase">
-                {walletType !== "none" ? "CONNECTED" : "OFFLINE"}
-              </p>
+
+          {walletType === "none" ? (
+            <div className="flex gap-2">
+              <button
+                onClick={connectSandbox}
+                className="px-3.5 py-1.5 border border-black hover:bg-black hover:text-white transition duration-200 text-xs font-mono font-bold uppercase"
+              >
+                Sandbox
+              </button>
+              <button
+                onClick={connectReal}
+                className="px-3.5 py-1.5 bg-black text-white hover:bg-zinc-800 transition duration-200 text-xs font-mono font-bold uppercase"
+              >
+                Connect Wallet
+              </button>
             </div>
-          </div>
+          ) : (
+            <div className="flex items-center gap-3 text-xs font-mono">
+              <div className="border border-black px-3 py-1.5 bg-zinc-50">
+                <span className="text-zinc-400">ADDR:</span> <span className="font-bold">{address.slice(0, 6)}...{address.slice(-4)}</span>
+              </div>
+              <div className="border border-black px-3 py-1.5 bg-zinc-50">
+                <span className="text-zinc-400">BAL:</span> <span className="font-bold">{balance} USDC</span>
+              </div>
+              <button
+                onClick={disconnectWallet}
+                className="px-3 py-1.5 border border-black hover:bg-black hover:text-white transition duration-200 font-bold uppercase"
+              >
+                Disconnect
+              </button>
+            </div>
+          )}
         </div>
       </header>
 
-      {/* Main Grid Content Area */}
-      <main className="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-0 z-10">
-        
-        {/* Sidebar Info (col-span-4) */}
-        <section className="lg:col-span-4 border-b lg:border-b-0 lg:border-r border-black p-8 md:p-10 flex flex-col justify-between bg-white gap-10">
-          <div className="space-y-10">
-            
-            {/* System Pulse Section */}
-            <div>
-              <h2 className="text-xs font-black uppercase tracking-widest mb-6 border-b border-black pb-2 font-mono">
-                System Pulse
-              </h2>
-              <div className="space-y-4 font-mono">
-                <div className="flex justify-between items-baseline">
-                  <span className="text-xs text-zinc-500">Whales Monitored</span>
-                  <span className="text-xl font-black tabular-nums">2,042 wallets</span>
-                </div>
-                <div className="flex justify-between items-baseline">
-                  <span className="text-xs text-zinc-500">24h Net Inflow</span>
-                  <span className="text-xl font-black tabular-nums text-emerald-600">+$42.8M</span>
-                </div>
-                <div className="flex justify-between items-baseline">
-                  <span className="text-xs text-zinc-500">Market Index</span>
-                  <span className="text-xl font-black uppercase">Accumulation</span>
-                </div>
-              </div>
+      {/* Main Splitscreen Layout */}
+      <main className="flex-1 grid grid-cols-1 md:grid-cols-2 border-b border-black">
+        {/* Left Column: Monospace Terminal Agent Log */}
+        <section className="border-r border-black flex flex-col bg-zinc-50">
+          <div className="border-b border-black py-3 px-6 bg-white flex justify-between items-center">
+            <span className="text-xs font-bold font-mono uppercase tracking-wider flex items-center gap-2">
+              <Terminal className="w-3.5 h-3.5" />
+              AGENT PIPELINE LOGSTREAM
+            </span>
+            <div className="flex items-center gap-1.5">
+              <span className={`w-2.5 h-2.5 rounded-full ${isGenerating ? "bg-amber-500 animate-pulse" : "bg-zinc-300"}`}></span>
+              <span className="text-[10px] font-mono text-zinc-500 uppercase">{isGenerating ? "Analyzing..." : "Idle"}</span>
             </div>
-
-            {/* Strategy matrix */}
-            <div>
-              <h2 className="text-xs font-black uppercase tracking-widest mb-4 border-b border-black pb-2 font-mono">
-                Risk Strategy Matrix
-              </h2>
-              
-              <div className="grid grid-cols-3 gap-2 mb-4">
-                {(["DEFENSIVE", "BALANCED", "DEGEN"] as const).map((profile) => (
-                  <button
-                    key={profile}
-                    onClick={() => {
-                      setRiskProfile(profile);
-                      addLog(`Strategy target rotated to [${profile}]`, "info");
-                    }}
-                    className={`py-2 text-[10px] font-mono font-black border-2 transition-all flex flex-col items-center justify-center ${
-                      riskProfile === profile
-                        ? "bg-black border-black text-white"
-                        : "bg-white border-black text-black hover:bg-zinc-100"
-                    }`}
-                  >
-                    <span>{profile}</span>
-                  </button>
-                ))}
-              </div>
-
-              <div className="space-y-4">
-                <p className="text-sm leading-snug font-medium text-neutral-800">
-                  {riskProfile === "DEGEN" && "Whales are aggressively rotating out of L1 majors into high-beta memecoin indexes. Swiping POPCAT & WIF on X Layer."}
-                  {riskProfile === "BALANCED" && "Whales are accumulating SOL/OKB in massive buy walls while distributing BTC. Medium-risk spot allocations optimized."}
-                  {riskProfile === "DEFENSIVE" && "Yield protection phase active. Whales withdrawing USDC and USDT into yield aggregators to guard against distribution."}
-                </p>
-                <div className="text-xs text-zinc-400 font-mono">
-                  Target Weightings: <span className="text-black font-semibold uppercase">{riskProfile} Profile</span>
-                </div>
-
-                {/* Allocation Ratio grid box matching the mockup */}
-                <div className="grid grid-cols-3 gap-3 border border-black p-4 bg-white shadow-[6px_6px_0px_0px_rgba(0,0,0,1)]">
-                  {getPortfolioAllocations().map((item) => (
-                    <div key={item.token}>
-                      <p className="text-[10px] uppercase font-black text-zinc-400 font-mono">{item.token}</p>
-                      <p className="text-xl font-black">{item.ratio}</p>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-
-            {/* Timeframe Analysis Panel */}
-            <div>
-              <h2 className="text-xs font-black uppercase tracking-widest mb-4 border-b border-black pb-2 font-mono">
-                Analysis Timeframe
-              </h2>
-              
-              <div className="grid grid-cols-4 gap-1.5 mb-4">
-                {(["DAILY", "WEEKLY", "MONTHLY", "YEARLY"] as const).map((t) => (
-                  <button
-                    key={t}
-                    onClick={() => {
-                      setTimeframe(t);
-                      addLog(`Analysis timeframe target rotated to [${t}]`, "info");
-                    }}
-                    className={`py-2 text-[9px] font-mono font-black border-2 transition-all flex flex-col items-center justify-center ${
-                      timeframe === t
-                        ? "bg-black border-black text-white"
-                        : "bg-white border-black text-black hover:bg-zinc-100"
-                    }`}
-                  >
-                    <span>{t}</span>
-                  </button>
-                ))}
-              </div>
-
-              {/* Action Button: Generate Portfolio Advice */}
-              <button
-                onClick={generateTimeframePortfolio}
-                disabled={isGenerating}
-                className="w-full py-3 bg-black text-white border-2 border-black text-xs font-black uppercase tracking-wider hover:bg-white hover:text-black transition-all flex items-center justify-center space-x-2 font-mono shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] hover:shadow-none"
-              >
-                <span>{isGenerating ? "Analyzing..." : `Analyze ${timeframe} Flows`}</span>
-              </button>
-            </div>
-
-            {/* Wallet Connector Section */}
-            <div>
-              <h2 className="text-xs font-black uppercase tracking-widest mb-4 border-b border-black pb-2 font-mono">
-                Wallet Session
-              </h2>
-              {walletType !== "none" ? (
-                <div className="space-y-3 font-mono text-xs">
-                  <div className="p-4 bg-zinc-50 border border-zinc-200 space-y-2">
-                    <div className="flex justify-between">
-                      <span className="text-zinc-500">Provider</span>
-                      <span className="font-bold uppercase text-[10px] px-1 bg-neutral-200 rounded">
-                        {walletType}
-                      </span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-zinc-500">Address</span>
-                      <span className="font-bold">{address.slice(0, 6)}...{address.slice(-4)}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-zinc-500">Balance</span>
-                      <span className="font-bold text-neutral-800">${balance} USDC</span>
-                    </div>
-                  </div>
-                  <button
-                    onClick={disconnectWallet}
-                    className="w-full py-2 bg-white text-black border border-black text-xs font-black uppercase tracking-wider hover:bg-black hover:text-white transition-all font-mono"
-                  >
-                    Disconnect Wallet
-                  </button>
-                </div>
-              ) : (
-                <div className="space-y-2 font-mono">
-                  <button
-                    onClick={connectSandbox}
-                    className="w-full py-2.5 bg-zinc-50 border border-black text-xs font-black uppercase tracking-wider hover:bg-zinc-100 transition-all flex items-center justify-center space-x-2"
-                  >
-                    <Cpu className="w-3.5 h-3.5 text-black" />
-                    <span>Launch Sandbox Key</span>
-                  </button>
-                  <button
-                    onClick={connectReal}
-                    className="w-full py-2.5 bg-black text-white border border-black text-xs font-black uppercase tracking-wider hover:bg-white hover:text-black transition-all flex items-center justify-center space-x-2"
-                  >
-                    <Wallet className="w-3.5 h-3.5" />
-                    <span>Connect OKX Wallet</span>
-                  </button>
-                  <p className="text-[10px] text-zinc-400 leading-relaxed text-center">
-                    Requires a connected Web3 keypair to settle OKX x402 payment headers.
-                  </p>
-                </div>
-              )}
-
-              {/* Sandbox verification configuration bypass checkbox */}
-              <div className="flex items-center space-x-2 pt-3 border-t border-dashed border-zinc-200 mt-3 font-mono text-[10px]">
-                <input
-                  type="checkbox"
-                  id="forceSandbox"
-                  checked={forceSandboxSign}
-                  onChange={(e) => {
-                    setForceSandboxSign(e.target.checked);
-                    addLog(`Bypass signature prompt set to: ${e.target.checked}`, "info");
-                  }}
-                  className="rounded border-black accent-black cursor-pointer h-3.5 w-3.5"
-                />
-                <label htmlFor="forceSandbox" className="font-black text-zinc-700 cursor-pointer select-none">
-                  FAST-TRACK PAYMENTS (AUTO-SIGN)
-                </label>
-              </div>
-            </div>
-
           </div>
 
-          {/* Identity panel block */}
-          <div className="p-6 bg-zinc-50 border border-zinc-200">
-            <p className="text-[10px] uppercase tracking-widest text-zinc-400 mb-2 font-mono font-bold">Agent Identity</p>
-            <p className="text-xs leading-relaxed text-zinc-600 font-mono">
-              ID: WW-GENESIS-01<br/>
-              TYPE: ASP (Agentic Service Provider)<br/>
-              PROTO: OKX x402
-            </p>
+          <div className="flex-1 p-6 font-mono text-xs overflow-y-auto max-h-[calc(100vh-210px)] flex flex-col gap-2">
+            {terminalLogs.length === 0 && (
+              <div className="text-zinc-400 italic py-4">
+                Pipeline inactive. Select configuration parameters and trigger whale analysis to begin stream.
+              </div>
+            )}
+            {terminalLogs.map((log, index) => (
+              <div key={index} className="leading-relaxed border-b border-zinc-100 pb-1 last:border-0">
+                <span className="text-zinc-400">[{log.timestamp}]</span>{" "}
+                <span className={
+                  log.type === "success" ? "text-emerald-700 font-bold" :
+                  log.type === "warning" ? "text-amber-600" :
+                  log.type === "error" ? "text-rose-600 font-bold" :
+                  "text-zinc-800"
+                }>
+                  {log.message}
+                </span>
+              </div>
+            ))}
+            <div ref={terminalEndRef} />
           </div>
         </section>
 
-        {/* Chat Terminal Section (col-span-8) */}
-        <section className="lg:col-span-8 flex flex-col bg-zinc-50 min-h-[500px] border-t lg:border-t-0 lg:border-l border-black">
-          
-          {/* Tab Switcher at the top of Section */}
-          <div className="flex border-b border-black font-mono text-xs bg-white">
-            <button
-              onClick={() => {
-                setActiveTab("dashboard");
-                addLog("Tab rotated: Whale Wizard Dashboard", "info");
-              }}
-              className={`flex-1 py-4 text-center font-black uppercase tracking-wider transition-all flex items-center justify-center space-x-2 border-r border-black ${
-                activeTab === "dashboard" ? "bg-black text-white" : "bg-white text-black hover:bg-zinc-100"
-              }`}
-            >
-              <Activity className="w-4 h-4" />
-              <span>Whale Wizard Dashboard</span>
-            </button>
-            <button
-              onClick={() => {
-                setActiveTab("chat");
-                addLog("Tab rotated: Terminal Chat", "info");
-              }}
-              className={`flex-1 py-4 text-center font-black uppercase tracking-wider transition-all flex items-center justify-center space-x-2 ${
-                activeTab === "chat" ? "bg-black text-white" : "bg-white text-black hover:bg-zinc-100"
-              }`}
-            >
-              <Terminal className="w-4 h-4" />
-              <span>Terminal Chat</span>
-            </button>
-          </div>
-
-          {activeTab === "chat" ? (
-            /* Messages view wrapper */
-            <div className="flex-1 p-8 md:p-10 overflow-y-auto space-y-10 scrollbar-thin">
-              <AnimatePresence initial={false}>
-                {messages.map((msg) => (
-                  <motion.div
-                    key={msg.id}
-                    initial={{ opacity: 0, y: 15 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ duration: 0.25 }}
-                    className="flex gap-4 items-start"
-                  >
-                    {msg.sender === "user" ? (
-                      <div className="flex gap-4 items-start w-full">
-                        <div className="text-xl text-neutral-400 mt-1">→</div>
-                        <div className="space-y-1 w-full">
-                          <p className="text-[10px] font-mono font-black uppercase tracking-[0.2em] text-zinc-400">
-                            CLIENT REQUEST // {msg.timestamp}
-                          </p>
-                          <p className="text-xl font-medium text-black border-b-2 border-black pb-2 inline-block max-w-full">
-                            {msg.text}
-                          </p>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="flex gap-4 items-start w-full">
-                        <div className="w-1.5 bg-black self-stretch min-h-[40px] flex-shrink-0"></div>
-                        <div className="space-y-4 flex-1">
-                          <div className="flex items-center gap-2">
-                            <p className="text-xs font-mono font-black uppercase tracking-[0.2em] text-black">
-                              WhaleWhisper // {msg.timestamp}
-                            </p>
-                            {msg.paymentDetails && (
-                              <span className="text-[9px] font-mono bg-emerald-50 text-emerald-700 px-1.5 py-0.5 rounded font-black uppercase border border-emerald-300">
-                                SETTLED
-                              </span>
-                            )}
-                          </div>
-                          <div className="space-y-4 max-w-3xl">
-                            <div className="prose max-w-none text-zinc-950 font-mono text-xs leading-relaxed">
-                              {renderMarkdown(msg.text)}
-                            </div>
-                            
-                            {msg.paymentDetails && (
-                              <div className="p-4 bg-white border border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] max-w-md font-mono text-[10px] text-zinc-500 space-y-1">
-                                <p className="font-bold uppercase text-black">OKX SETTLED TRANSACTION LOG</p>
-                                <div className="flex justify-between">
-                                  <span>Settled amount:</span>
-                                  <span className="font-black text-black">{msg.paymentDetails.amount}</span>
-                                </div>
-                                <div className="flex justify-between">
-                                  <span>Network Layer:</span>
-                                  <span className="text-black">{msg.paymentDetails.network}</span>
-                                </div>
-                                <div className="flex justify-between">
-                                  <span>Verification Scheme:</span>
-                                  <span className="text-black">{msg.paymentDetails.scheme}</span>
-                                </div>
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                    )}
-                  </motion.div>
-                ))}
-              </AnimatePresence>
-
-              {isGenerating && (
-                <motion.div
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  className="flex items-center space-x-3 text-xs font-mono text-zinc-500 pl-6 border-l-2 border-dashed border-black/20 py-2"
-                >
-                  <div className="flex space-x-1">
-                    <span className="h-1.5 w-1.5 bg-black rounded-full animate-bounce" style={{ animationDelay: "0ms" }}></span>
-                    <span className="h-1.5 w-1.5 bg-black rounded-full animate-bounce" style={{ animationDelay: "150ms" }}></span>
-                    <span className="h-1.5 w-1.5 bg-black rounded-full animate-bounce" style={{ animationDelay: "300ms" }}></span>
-                  </div>
-                  <span className="font-bold tracking-tight uppercase">Settling x402 handshakes & compiling smart money analytics...</span>
-                </motion.div>
-              )}
-              <div ref={messagesEndRef} />
-            </div>
-          ) : !hasAnalyzed ? (
-            /* Empty State view when no analysis is loaded */
-            <div className="flex-1 p-8 md:p-10 flex flex-col items-center justify-center text-center font-mono space-y-4 bg-white min-h-[400px]">
-              <Activity className="w-12 h-12 text-zinc-300 animate-pulse" />
-              <div className="space-y-2">
-                <h3 className="text-xs font-black uppercase tracking-widest text-black">No Active Analysis Loaded</h3>
-                <p className="text-[11px] text-zinc-400 max-w-sm leading-relaxed mx-auto">
-                  To initialize the interactive smart money dashboard and deploy simulated L1 allocation contract ratios, connect your wallet and trigger an analysis using the side panel controllers.
-                </p>
-              </div>
-            </div>
-          ) : (
-            /* Wizard Dashboard view */
-            <div className="flex-1 p-8 md:p-10 overflow-y-auto space-y-8 scrollbar-thin bg-white">
+        {/* Right Column: Allocation & Actions */}
+        <section className="flex flex-col bg-white p-8 md:p-12 justify-between">
+          <div className="space-y-8">
+            {/* Header Configuration */}
+            <div>
+              <span className="text-[10px] tracking-widest font-mono text-zinc-400 uppercase font-black">PIPELINE METADATA</span>
+              <h2 className="text-xl font-black font-mono tracking-tighter uppercase mt-1 mb-6 border-b border-black pb-2">TARGET STRATEGY</h2>
               
-              {/* Step 1: Detect & List Whales */}
-              <div className="space-y-4">
-                <div className="flex items-center space-x-3">
-                  <div className="w-6 h-6 rounded-full bg-black text-white flex items-center justify-center font-mono text-xs font-black">1</div>
-                  <h3 className="text-sm font-black uppercase tracking-wider font-mono text-black">Whale Wallet Directory</h3>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="text-[10px] font-mono text-zinc-400 uppercase block mb-1">Risk Profile</label>
+                  <select
+                    value={riskProfile}
+                    onChange={(e) => setRiskProfile(e.target.value as any)}
+                    disabled={isGenerating}
+                    className="w-full bg-white border border-black px-3 py-2 font-mono text-xs uppercase focus:outline-none cursor-pointer"
+                  >
+                    <option value="BALANCED">Balanced Allocation</option>
+                    <option value="DEGEN">Degen Aggressive</option>
+                    <option value="DEFENSIVE">Defensive Conservative</option>
+                  </select>
                 </div>
-                
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {whaleList.map((w) => {
-                    const isTracked = trackedWallets.includes(w.address);
-                    return (
-                      <div key={w.address} className="border border-black p-4 bg-zinc-50 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] flex flex-col justify-between">
-                        <div className="space-y-2">
-                          <div className="flex justify-between items-center gap-2">
-                            <span className="text-[10px] font-black uppercase font-mono px-2 py-0.5 bg-black text-white">{w.alias}</span>
-                            <span className="font-mono text-[9px] text-zinc-500 whitespace-nowrap">{w.address.slice(0, 8)}...{w.address.slice(-6)}</span>
-                          </div>
-                          <p className="text-[11px] leading-relaxed text-zinc-600 font-mono">{w.details}</p>
-                        </div>
-                        <button
-                          onClick={() => {
-                            if (isTracked) {
-                              setTrackedWallets(prev => prev.filter(addr => addr !== w.address));
-                              addLog(`Stopped tracking whale: ${w.alias}`, "warning");
-                            } else {
-                              setTrackedWallets(prev => [...prev, w.address]);
-                              addLog(`Started tracking whale: ${w.alias}`, "success");
-                            }
-                          }}
-                          className={`mt-4 w-full py-1.5 border border-black text-[10px] font-black uppercase font-mono transition-all ${
-                            isTracked ? "bg-zinc-800 text-white hover:bg-zinc-700" : "bg-white text-black hover:bg-zinc-100"
-                          }`}
-                        >
-                          {isTracked ? "✓ Tracking (Click to Untrack)" : "Track Wallet"}
-                        </button>
-                      </div>
-                    );
-                  })}
+                <div>
+                  <label className="text-[10px] font-mono text-zinc-400 uppercase block mb-1">Timeframe View</label>
+                  <select
+                    value={timeframe}
+                    onChange={(e) => setTimeframe(e.target.value as any)}
+                    disabled={isGenerating}
+                    className="w-full bg-white border border-black px-3 py-2 font-mono text-xs uppercase focus:outline-none cursor-pointer"
+                  >
+                    <option value="DAILY">Daily Flow</option>
+                    <option value="WEEKLY">Weekly Structural</option>
+                    <option value="MONTHLY">Monthly Macro</option>
+                    <option value="YEARLY">Yearly Cycle</option>
+                  </select>
                 </div>
               </div>
+            </div>
 
-              {/* Step 2: Live Transaction Monitor */}
-              <div className="space-y-4 border-t border-black pt-8">
-                <div className="flex items-center space-x-3">
-                  <div className="w-6 h-6 rounded-full bg-black text-white flex items-center justify-center font-mono text-xs font-black">2</div>
-                  <h3 className="text-sm font-black uppercase tracking-wider font-mono text-black">
-                    On-Chain Transaction Monitor ({timeframe} View)
-                  </h3>
+            {/* Allocation Results */}
+            <div className="border border-black p-6 bg-zinc-50 min-h-[220px] flex flex-col justify-between">
+              {agentStep === 0 && !analysisResult && (
+                <div className="my-auto text-center py-6">
+                  <Lock className="w-6 h-6 mx-auto mb-2 text-zinc-300" />
+                  <p className="text-xs font-mono text-zinc-400 uppercase tracking-wider">Analysis Result Locked</p>
+                  <p className="text-[10px] font-mono text-zinc-400 mt-1">Please pay $0.01 testnet fee to execute sequential pipeline.</p>
                 </div>
-                
-                <div className="border border-black p-4 bg-zinc-50 font-mono text-xs">
-                  <div className="flex justify-between items-center pb-2 border-b border-black mb-3">
-                    <span className="font-black text-black">Captured Transactions ({whaleTransactions.length})</span>
-                    <span className="text-[10px] text-zinc-500">Filtered by tracked wallets</span>
+              )}
+
+              {isGenerating && agentStep < 5 && (
+                <div className="my-auto space-y-3 py-6">
+                  <div className="h-1 bg-zinc-200 overflow-hidden border border-black relative">
+                    <div 
+                      className="absolute h-full bg-black transition-all duration-300" 
+                      style={{ width: `${(agentStep / 4) * 100}%` }}
+                    />
                   </div>
-                  
-                  {isLoadingTxs ? (
-                    <div className="flex flex-col items-center justify-center py-8 space-y-2">
-                      <div className="w-5 h-5 border-2 border-black border-t-transparent rounded-full animate-spin"></div>
-                      <span className="text-[10px] uppercase font-bold text-zinc-400 font-mono tracking-widest animate-pulse">Syncing on-chain logs...</span>
+                  <div className="flex justify-between items-center text-[10px] font-mono text-zinc-500 uppercase">
+                    <span>Orchestrating Agents...</span>
+                    <span>Step {agentStep} of 4</span>
+                  </div>
+                </div>
+              )}
+
+              {analysisResult && agentStep === 5 && (
+                <div className="space-y-6">
+                  <div>
+                    <div className="flex justify-between items-end border-b border-zinc-200 pb-1.5">
+                      <span className="text-[10px] font-mono text-zinc-400 uppercase">Wallet Class</span>
+                      <span className="text-xs font-mono font-bold uppercase">{analysisResult.classification}</span>
                     </div>
-                  ) : whaleTransactions.length > 0 ? (
-                    <div className="space-y-3 max-h-48 overflow-y-auto pr-2 scrollbar-thin">
-                      {whaleTransactions.map((tx, idx) => (
-                        <div key={idx} className="p-3 bg-white border border-zinc-200 text-[10px] leading-relaxed flex flex-col md:flex-row md:justify-between md:items-center gap-2">
-                          <div className="space-y-1">
-                            <div className="flex items-center space-x-2">
-                              <span className="font-bold text-black">{tx.alias}</span>
-                              <span className="text-zinc-400">→</span>
-                              <span className={`font-black px-1.5 py-0.5 text-[9px] uppercase tracking-wider ${
-                                tx.action === "BUY" ? "text-emerald-700 bg-emerald-50 border border-emerald-300" : "text-rose-700 bg-rose-50 border border-rose-300"
-                              }`}>{tx.action}</span>
-                              <span className="font-bold text-neutral-800">{tx.amount}</span>
-                            </div>
-                            <div className="text-zinc-500 text-[9px]">
-                              Wallet: {tx.wallet.slice(0, 12)}... | Value: {tx.usdValue}
-                            </div>
+                    <div className="flex justify-between items-end border-b border-zinc-200 pb-1.5 mt-2">
+                      <span className="text-[10px] font-mono text-zinc-400 uppercase">Intended Behavior</span>
+                      <span className="text-xs font-mono font-bold uppercase">{analysisResult.intent}</span>
+                    </div>
+                  </div>
+
+                  <div>
+                    <span className="text-[10px] font-mono text-zinc-400 uppercase block mb-3">Portfolio Allocation Recommendation</span>
+                    <div className="space-y-3.5">
+                      {Object.entries(analysisResult.portfolioRecommendation).map(([asset, percentage]) => (
+                        <div key={asset}>
+                          <div className="flex justify-between items-center text-xs font-mono mb-1 font-bold">
+                            <span>{asset}</span>
+                            <span>{percentage}%</span>
                           </div>
-                          <span className="text-[9px] text-zinc-400 self-end md:self-center">{tx.timestamp}</span>
+                          <div className="w-full h-3.5 bg-zinc-200 border border-black">
+                            <div
+                              className="h-full bg-black transition-all duration-500"
+                              style={{ width: `${percentage}%` }}
+                            />
+                          </div>
                         </div>
                       ))}
                     </div>
-                  ) : (
-                    <p className="text-zinc-400 italic text-center py-6 text-[11px]">No tracked wallets selected. Toggle tracking on Step 1 to load transactions.</p>
-                  )}
-                </div>
-              </div>
-
-              {/* Step 3: Run AI Analysis */}
-              <div className="space-y-4 border-t border-black pt-8">
-                <div className="flex items-center space-x-3">
-                  <div className="w-6 h-6 rounded-full bg-black text-white flex items-center justify-center font-mono text-xs font-black">3</div>
-                  <h3 className="text-sm font-black uppercase tracking-wider font-mono text-black">Whale Whisperer AI Engine</h3>
-                </div>
-
-                <div className="space-y-4">
-                  <div className="flex gap-2">
-                    <button
-                      onClick={generateTimeframePortfolio}
-                      disabled={isGenerating || whaleTransactions.length === 0}
-                      className="flex-1 py-3 bg-black text-white border-2 border-black text-xs font-black uppercase tracking-wider hover:bg-white hover:text-black transition-all flex items-center justify-center space-x-2 font-mono shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] hover:shadow-none disabled:opacity-50 disabled:hover:bg-black disabled:hover:text-white"
-                    >
-                      <span>{isGenerating ? "Compiling Analysis..." : "Compile AI Portfolio Analysis ($0.01)"}</span>
-                    </button>
                   </div>
-
-                  {isGenerating ? (
-                    <div className="border border-black p-6 bg-zinc-50 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] space-y-4">
-                      <div className="flex justify-between items-center border-b border-black pb-2 mb-3">
-                        <span className="font-mono text-xs font-black uppercase tracking-wider text-black">Generating Report...</span>
-                        <span className="font-mono text-[9px] text-zinc-500 animate-pulse">Settle EIP-402 challenge</span>
-                      </div>
-                      <div className="space-y-3 animate-pulse font-mono">
-                        <div className="h-4 bg-zinc-200 rounded w-3/4"></div>
-                        <div className="h-3 bg-zinc-200 rounded w-5/6"></div>
-                        <div className="h-3 bg-zinc-200 rounded w-2/3"></div>
-                        <div className="h-10 bg-zinc-200 rounded w-full my-4 border border-zinc-300"></div>
-                        <div className="h-3 bg-zinc-200 rounded w-1/2"></div>
-                      </div>
-                    </div>
-                  ) : messages.some(m => m.sender === "agent" && m.id !== "welcome") ? (
-                    <div className="border border-black p-6 bg-zinc-50 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] space-y-4 max-h-[400px] overflow-y-auto scrollbar-thin">
-                      <div className="flex justify-between items-center border-b border-black pb-2 mb-3">
-                        <span className="font-mono text-xs font-black uppercase tracking-wider text-black">Latest AI Report</span>
-                        <span className="font-mono text-[9px] text-zinc-500">Verified by OKX payment protocol</span>
-                      </div>
-                      <div className="prose max-w-none text-zinc-950 font-mono text-xs leading-relaxed">
-                        {renderMarkdown(
-                          [...messages]
-                            .reverse()
-                            .find(m => m.sender === "agent" && m.id !== "welcome")?.text || ""
-                        )}
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="border border-dashed border-black/30 p-8 text-center bg-zinc-50">
-                      <p className="text-xs font-mono text-zinc-400 italic">No report compiled yet. Click the analyze button to process payment and request smart money insights.</p>
-                    </div>
-                  )}
                 </div>
-              </div>
-
-              {/* Step 4 & 5: Portfolio Configurator & Smart Contract Deployment */}
-              <div className="space-y-4 border-t border-black pt-8 pb-4">
-                <div className="flex items-center space-x-3">
-                  <div className="w-6 h-6 rounded-full bg-black text-white flex items-center justify-center font-mono text-xs font-black">4</div>
-                  <h3 className="text-sm font-black uppercase tracking-wider font-mono text-black">Portfolio Allocations & Smart Contract Action</h3>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  {[
-                    {
-                      type: "DEGEN",
-                      alloc: "45% SOL, 30% POPCAT, 15% WIF, 10% USDC",
-                      pros: "Maximum leverage, chases whale meme rotations.",
-                      cons: "High drawdowns, absolute risk exposure."
-                    },
-                    {
-                      type: "BALANCED",
-                      alloc: "40% BTC, 30% SOL, 20% ETH, 10% USDC",
-                      pros: "Captures L1 growth while anchored in major stores of value.",
-                      cons: "Underperforms during extreme meme market rallies."
-                    },
-                    {
-                      type: "DEFENSIVE",
-                      alloc: "50% USDC/USDT, 30% BTC, 15% ETH, 5% OKB",
-                      pros: "Capital preservation, steady yield aggregation.",
-                      cons: "Very low return in standard bullish expansions."
-                    }
-                  ].map((p) => (
-                    <div
-                      key={p.type}
-                      onClick={() => setSelectedPortfolio(p.type as any)}
-                      className={`border-2 p-4 cursor-pointer transition-all flex flex-col justify-between font-mono text-xs ${
-                        selectedPortfolio === p.type
-                          ? "bg-black border-black text-white shadow-none"
-                          : "bg-white border-black text-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] hover:bg-zinc-50"
-                      }`}
-                    >
-                      <div className="space-y-3">
-                        <div className="flex justify-between items-center">
-                          <span className="font-black text-xs uppercase tracking-wider">{p.type} Target</span>
-                          {selectedPortfolio === p.type && <span className="text-[10px] px-1 bg-white text-black font-bold">SELECTED</span>}
-                        </div>
-                        
-                        <div className="space-y-1">
-                          <span className="text-[9px] uppercase tracking-widest text-zinc-400 font-bold block">Allocation</span>
-                          <p className="text-[11px] font-black">{p.alloc}</p>
-                        </div>
-                        
-                        <div className="space-y-1">
-                          <span className="text-[9px] uppercase tracking-widest text-emerald-500 font-bold block">Pros</span>
-                          <p className={`text-[10px] ${selectedPortfolio === p.type ? "text-zinc-300" : "text-zinc-600"}`}>{p.pros}</p>
-                        </div>
-                        
-                        <div className="space-y-1">
-                          <span className="text-[9px] uppercase tracking-widest text-rose-500 font-bold block">Cons</span>
-                          <p className={`text-[10px] ${selectedPortfolio === p.type ? "text-zinc-300" : "text-zinc-600"}`}>{p.cons}</p>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-
-                {selectedPortfolio && (
-                  <div className="border border-black p-4 bg-zinc-50 font-mono text-xs space-y-4 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">
-                    <div className="flex justify-between items-center border-b border-black pb-2">
-                      <span className="font-black text-black">Active Configuration: {selectedPortfolio}</span>
-                      <span className="text-[10px] text-zinc-400 font-bold">Target wallet: {address ? `${address.slice(0, 10)}...` : "Sandbox Key"}</span>
-                    </div>
-
-                    {activeAllocation === selectedPortfolio ? (
-                      <div className="p-3 bg-emerald-50 border border-emerald-400 text-emerald-800 text-[10px] font-bold text-center uppercase tracking-wider">
-                        ✓ Portfolio rule successfully set on connected wallet address!
-                      </div>
-                    ) : isDeploying ? (
-                      <div className="space-y-2 p-3 bg-black text-white text-[10px] max-h-36 overflow-y-auto scrollbar-thin">
-                        {deploymentLogs.map((l, i) => (
-                          <div key={i} className="flex space-x-2">
-                            <span className="text-zinc-500">[{i+1}]</span>
-                            <span>{l}</span>
-                          </div>
-                        ))}
-                        <div ref={deploymentLogsEndRef} />
-                      </div>
-                    ) : (
-                      <button
-                        onClick={() => {
-                          if (walletType === "none") {
-                            alert("Connect your wallet first to authorize the smart contract configuration.");
-                            return;
-                          }
-                          setIsDeploying(true);
-                          setDeploymentLogs([]);
-                          addLog(`Initiating deployment ticket for ${selectedPortfolio} portfolio...`, "info");
-                          
-                          const steps = [
-                            "Compiling EVM allocation contract schema on X Layer...",
-                            "Authorizing bridge signatures & ERC-20 allowances...",
-                            "Routing target spot balance weights (BTC/SOL/ETH)...",
-                            "Broadcasting smart transaction payload to RPC...",
-                            "Deployment Successful! Tx Hash: 0x" + "a".repeat(64) + " [Confirmed]"
-                          ];
-
-                          let currentStep = 0;
-                          const interval = setInterval(() => {
-                            if (currentStep < steps.length) {
-                              setDeploymentLogs(prev => [...prev, steps[currentStep]]);
-                              addLog(steps[currentStep], currentStep === steps.length - 1 ? "success" : "info");
-                              currentStep++;
-                            } else {
-                              clearInterval(interval);
-                              setIsDeploying(false);
-                              setActiveAllocation(selectedPortfolio);
-                              addLog(`Allocations for ${selectedPortfolio} successfully defined on connected wallet.`, "success");
-                            }
-                          }, 900);
-                        }}
-                        className="w-full py-3 bg-neutral-900 text-white font-black text-xs uppercase tracking-wider hover:bg-neutral-800 transition-all flex items-center justify-center space-x-2"
-                      >
-                        <span>Deploy Selected Ratio to Wallet</span>
-                      </button>
-                    )}
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* Interactive Web3 handshake log console */}
-          <div className="px-10 py-6 border-t border-black bg-white">
-            <div className="flex justify-between items-center pb-2 mb-3 border-b border-zinc-200 text-neutral-500 font-mono font-bold uppercase text-[10px] tracking-widest">
-              <div className="flex items-center space-x-1.5 text-black">
-                <Terminal className="w-4 h-4" />
-                <span>Web3 Handshake Ledger</span>
-              </div>
-              <button
-                onClick={() => setLogs([])}
-                className="hover:text-black text-zinc-400 transition-all flex items-center space-x-1"
-                title="Clear logs"
-              >
-                <RotateCcw className="w-3.5 h-3.5" />
-                <span>Clear Ledger</span>
-              </button>
-            </div>
-            <div className="h-28 overflow-y-auto space-y-1.5 scrollbar-thin font-mono text-[10px] leading-relaxed text-zinc-600">
-              {logs.map((log) => (
-                <div key={log.id} className="flex items-start space-x-2">
-                  <span className="text-zinc-400">[{log.timestamp}]</span>
-                  <span
-                    className={`${
-                      log.type === "success"
-                        ? "text-emerald-600 font-bold"
-                        : log.type === "error"
-                        ? "text-rose-600 font-bold"
-                        : log.type === "warning"
-                        ? "text-yellow-600 font-bold"
-                        : "text-zinc-700"
-                    }`}
-                  >
-                    {log.message}
-                  </span>
-                </div>
-              ))}
-              <div ref={logsEndRef} />
+              )}
             </div>
           </div>
 
-          {/* Black Input & Payment Footer Row exactly like mockup styling */}
-          <form onSubmit={sendMessage} className="h-auto md:h-24 bg-black text-white flex flex-col md:flex-row items-stretch md:items-center justify-between border-t border-black p-4 md:px-10 gap-4">
-            <div className="flex items-center gap-3">
-              <div className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse"></div>
-              <div>
-                <p className="text-[10px] uppercase tracking-widest font-bold font-mono">
-                  Secure Payment Channel Active
-                </p>
-                <p className="text-[9px] text-zinc-500 font-mono">
-                  OKX Web3 Gateway Protection
-                </p>
+          <div className="mt-8 space-y-4">
+            {/* Deploy Console for testnet simulation */}
+            {deploymentLogs.length > 0 && (
+              <div className="border border-black p-4 bg-zinc-950 text-emerald-500 font-mono text-[10px] rounded-none max-h-[140px] overflow-y-auto">
+                {deploymentLogs.map((dLog, idx) => (
+                  <div key={idx} className="mb-0.5">
+                    <span className="text-emerald-700 font-bold">&gt;&gt;</span> {dLog}
+                  </div>
+                ))}
+                <div ref={deployEndRef} />
+              </div>
+            )}
+
+            {/* Action Buttons */}
+            <div className="flex flex-col gap-2">
+              {analysisResult && agentStep === 5 ? (
+                <button
+                  onClick={deployPortfolio}
+                  disabled={isDeploying || isDeployed}
+                  className={`w-full py-3.5 font-mono text-xs font-bold uppercase tracking-wider transition border border-black ${
+                    isDeployed
+                      ? "bg-zinc-100 text-zinc-400 cursor-not-allowed border-zinc-200"
+                      : isDeploying
+                      ? "bg-white text-black cursor-not-allowed"
+                      : "bg-black text-white hover:bg-zinc-800"
+                  }`}
+                >
+                  {isDeployed ? "ALLOCATION DEPLOYED" : isDeploying ? "DEPLOYING TO TESTNET..." : "DEPLOY PORTFOLIO ON TESTNET (FREE)"}
+                </button>
+              ) : (
+                <button
+                  onClick={runAnalysis}
+                  disabled={isGenerating}
+                  className={`w-full py-3.5 font-mono text-xs font-bold uppercase tracking-wider transition border border-black ${
+                    isGenerating
+                      ? "bg-zinc-100 text-zinc-400 cursor-not-allowed border-zinc-200"
+                      : "bg-black text-white hover:bg-zinc-800"
+                  }`}
+                >
+                  {isGenerating ? "EXECUTING PIPELINE..." : "TRIGGER WHALE ANALYSIS ($0.01 TESTNET)"}
+                </button>
+              )}
+            </div>
+            
+            {/* Need Testnet Funds onboarding group */}
+            <div className="mt-4 text-center border-t border-zinc-150 pt-4">
+              <span className="text-[10px] font-mono text-zinc-400 uppercase">Need Testnet Funds?</span>
+              <div className="flex justify-center gap-4 mt-1.5">
+                <a 
+                  href="https://www.okx.com/xlayer/faucet" 
+                  target="_blank" 
+                  rel="noreferrer" 
+                  className="text-[10px] font-mono text-zinc-500 hover:text-black underline uppercase"
+                >
+                  X Layer Faucet
+                </a>
+                <a 
+                  href="https://www.okx.com/en-sg/help/okx-ai-101" 
+                  target="_blank" 
+                  rel="noreferrer" 
+                  className="text-[10px] font-mono text-zinc-500 hover:text-black underline uppercase"
+                >
+                  OKX Help Faucet
+                </a>
+                <a 
+                  href="https://www.okx.com/web3/build/faucet/xlayer" 
+                  target="_blank" 
+                  rel="noreferrer" 
+                  className="text-[10px] font-mono text-zinc-500 hover:text-black underline uppercase"
+                >
+                  Developer Faucet
+                </a>
               </div>
             </div>
-
-            <div className="flex-1 flex items-center gap-3 max-w-2xl">
-              <input
-                type="text"
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                placeholder="Ask for allocation advice..."
-                disabled={isGenerating}
-                className="flex-1 bg-zinc-900 text-white placeholder-zinc-500 font-mono text-xs md:text-sm px-4 py-2.5 border-b-2 border-white focus:outline-none focus:border-zinc-300 transition-colors"
-              />
-              
-              <div className="hidden lg:flex items-center gap-1 text-[10px] font-mono text-zinc-400 italic">
-                <span>Requires $0.01 per query</span>
-              </div>
-
-              <button
-                type="submit"
-                disabled={isGenerating || !input.trim()}
-                className="bg-white text-black px-6 py-2.5 text-xs font-bold uppercase tracking-widest hover:invert transition-colors disabled:opacity-50 disabled:hover:invert flex items-center gap-1"
-              >
-                <span>Prompt</span>
-                <ArrowRight className="w-3.5 h-3.5" />
-              </button>
-            </div>
-          </form>
-
+          </div>
         </section>
-
       </main>
 
-      {/* Bottom Metadata row matching design mockup */}
-      <footer className="flex justify-between items-center px-10 py-6 border-t border-black bg-white z-10 font-mono">
-        <p className="text-[10px] text-zinc-400 uppercase tracking-widest font-bold">
-          ©2026 WhaleWhisper Logic Systems
-        </p>
-        <p className="text-[10px] text-zinc-400 uppercase tracking-widest font-bold hidden sm:block">
-          Genesis Hackathon Entry [EIP-402 Compliant]
-        </p>
+      {/* Swiss Footer */}
+      <footer className="py-4 px-8 border-t border-black bg-white flex justify-between items-center text-[10px] font-mono text-zinc-400">
+        <span>X Layer Chain ID: 195</span>
+        <span>Status: Powered by Google Anti-Gravity SDK</span>
       </footer>
 
+      {/* Faucet Overlay Modal */}
       {showFaucetModal && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-fade-in">
-          <div className="bg-white border-2 border-black max-w-md w-full shadow-[8px_8px_0px_0px_rgba(0,0,0,1)] p-8 font-mono text-left relative flex flex-col space-y-6">
-            <button 
-              onClick={() => setShowFaucetModal(false)}
-              className="absolute top-4 right-4 text-zinc-400 hover:text-black transition-all"
-            >
-              ✕
-            </button>
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 z-50">
+          <div className="bg-white border border-black shadow-[8px_8px_0px_0px_rgba(0,0,0,1)] max-w-md w-full p-8 font-mono text-xs leading-relaxed relative">
+            <h3 className="text-sm font-black border-b border-black pb-2 mb-4 uppercase tracking-tighter">INSUFFICIENT TESTNET USDC BALANCE</h3>
+            <p className="text-zinc-600 mb-6 uppercase text-[10px]">
+              You require at least $0.01 USDC on X Layer Testnet to trigger the agent pipeline payment.
+            </p>
             
-            <div className="flex items-center space-x-3 text-rose-600">
-              <Shield className="w-8 h-8" />
-              <h3 className="text-sm font-black uppercase tracking-widest leading-none">Insufficient Balance</h3>
-            </div>
-
-            <div className="space-y-3">
-              <p className="text-[11px] text-zinc-500 uppercase tracking-widest font-black">
-                USDC Testnet Assets Required
-              </p>
-              <p className="text-xs leading-relaxed text-zinc-700">
-                To complete the EIP-402 payment handshake, your active wallet address must hold at least <span className="font-bold text-black">0.01 USDC</span> on the X Layer Testnet.
-              </p>
-              <div className="p-3 bg-zinc-50 border border-zinc-200 text-[10px] text-zinc-600 leading-relaxed break-all">
-                Active Address: <span className="font-bold text-black">{address || "No wallet connected"}</span>
-              </div>
-            </div>
-
-            <div className="flex flex-col gap-2">
+            <div className="space-y-4">
+              {walletType === "sandbox" && (
+                <button
+                  onClick={() => {
+                    setBalance("10.00");
+                    addTerminalLog("Auto-funded Sandbox wallet with $10.00 mock USDC.", "success");
+                    setShowFaucetModal(false);
+                  }}
+                  className="w-full py-2.5 border border-black hover:bg-zinc-50 font-bold uppercase tracking-wider"
+                >
+                  Auto-Fund Sandbox Key
+                </button>
+              )}
               <a
                 href="https://www.okx.com/xlayer/faucet"
                 target="_blank"
                 rel="noreferrer"
-                className="w-full py-3 bg-black text-white hover:bg-zinc-900 transition-all font-black text-xs uppercase tracking-wider text-center flex items-center justify-center space-x-2 border border-black shadow-[4px_4px_0px_0px_rgba(128,128,128,0.5)] active:translate-x-0.5 active:translate-y-0.5 active:shadow-none"
+                className="block text-center w-full py-2.5 bg-black text-white hover:bg-zinc-800 font-bold uppercase tracking-wider"
               >
-                <span>Go to OKX X Layer Faucet</span>
-                <ArrowUpRight className="w-4 h-4" />
+                Open Official OKX Faucet
               </a>
-
-              {(walletType === "sandbox" || forceSandboxSign) && (
-                <button
-                  onClick={() => {
-                    setBalance("10.00");
-                    addLog("Auto-funded local sandbox wallet with $10.00 mock USDC.", "success");
-                    setShowFaucetModal(false);
-                  }}
-                  className="w-full py-2.5 bg-zinc-100 hover:bg-zinc-200 text-black font-black text-xs uppercase tracking-wider transition-all border border-black flex items-center justify-center space-x-1"
-                >
-                  <span>Auto-Fund Sandbox Key ($10.00)</span>
-                </button>
-              )}
-              
               <button
                 onClick={() => setShowFaucetModal(false)}
-                className="w-full py-2 bg-transparent text-zinc-400 hover:text-black font-black text-[10px] uppercase tracking-wider text-center"
+                className="w-full py-2 bg-zinc-100 hover:bg-zinc-200 font-bold text-zinc-500 uppercase tracking-wider mt-2"
               >
-                Cancel / Close
+                Close
               </button>
             </div>
           </div>
         </div>
       )}
-    </main>
+    </div>
   );
 }

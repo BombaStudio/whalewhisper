@@ -63,7 +63,7 @@ ${JSON.stringify(transactions || [], null, 2)}
 User Query: ${message}
 `;
 
-    const analysis = await agent.analyze(promptWithMainnetInstructions, riskProfile, timeframe);
+    const analysis = await agent.analyze(promptWithMainnetInstructions, riskProfile, timeframe, transactions);
 
     return NextResponse.json({ analysis }) as NextResponse<any>;
   } catch (error: any) {
