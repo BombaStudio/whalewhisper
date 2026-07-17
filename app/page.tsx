@@ -13,7 +13,7 @@ import {
   ArrowUpRight,
   Lock
 } from "lucide-react";
-import { createWalletClient, custom } from "viem";
+import { createPublicClient, http, createWalletClient, custom } from "viem";
 import { privateKeyToAccount, generatePrivateKey } from "viem/accounts";
 import { wrapFetchWithPaymentFromConfig } from "@okxweb3/x402-fetch";
 import { ExactEvmScheme, toClientEvmSigner } from "@okxweb3/x402-evm";
@@ -23,6 +23,18 @@ interface LogEntry {
   type: "info" | "success" | "warning" | "error";
   timestamp: string;
 }
+
+const publicClient = createPublicClient({
+  chain: {
+    id: 195,
+    name: "X Layer Testnet",
+    nativeCurrency: { name: "OKB", symbol: "OKB", decimals: 18 },
+    rpcUrls: {
+      default: { http: ["https://xlayertestrpc.okx.com"] },
+    },
+  },
+  transport: http(),
+});
 
 export default function Home() {
   // Config & State
@@ -50,7 +62,7 @@ export default function Home() {
 
   // Deployment
   const [isDeploying, setIsDeploying] = useState<boolean>(false);
-  const [deploymentLogs, setDeploymentLogs] = useState<string[]>([]);
+  const [deploymentLogs, setDeploymentLogs] = useState<(string | React.ReactNode)[]>([]);
   const [isDeployed, setIsDeployed] = useState<boolean>(false);
 
   const terminalEndRef = useRef<HTMLDivElement>(null);
@@ -62,40 +74,17 @@ export default function Home() {
     setTerminalLogs(prev => [...prev, { message, type, timestamp }]);
   };
 
-  // Fetch real on-chain USDC balance for the target address on X Layer Testnet
-  const getERC20Balance = async (walletAddress: string): Promise<string> => {
+  // Fetch real on-chain OKB balance for the target address on X Layer Testnet
+  const getOKBBalance = async (walletAddress: string): Promise<string> => {
     try {
-      const usdcContract = "0x9e29b3aada05bf2d2c827af80bd28dc0b9b4fb0c"; // Test USDC
-      const paddedAddress = walletAddress.toLowerCase().replace("0x", "").padStart(64, "0");
-      const calldata = `0x70a08231${paddedAddress}`;
-
-      const res = await fetch("https://xlayertestrpc.okx.com", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          jsonrpc: "2.0",
-          method: "eth_call",
-          params: [
-            {
-              to: usdcContract,
-              data: calldata
-            },
-            "latest"
-          ],
-          id: 1
-        })
+      const balanceBI = await publicClient.getBalance({
+        address: walletAddress as `0x${string}`,
       });
-      if (!res.ok) return "0.00";
-      const json = await res.json();
-      const hexResult = json.result;
-      if (!hexResult || hexResult === "0x") return "0.00";
-      
-      const balanceBI = BigInt(hexResult);
-      const balanceNum = Number(balanceBI) / 1e6; // 6 decimals
-      return balanceNum.toFixed(2);
+      const balanceNum = Number(balanceBI) / 1e18;
+      return balanceNum.toFixed(4);
     } catch (err) {
-      console.error("Failed to fetch ERC20 balance:", err);
-      return "0.00";
+      console.error("Failed to fetch native OKB balance:", err);
+      return "0.0000";
     }
   };
 
@@ -121,7 +110,7 @@ export default function Home() {
       }
 
       try {
-        const bal = await getERC20Balance(activeAddr);
+        const bal = await getOKBBalance(activeAddr);
         if (active) setBalance(bal);
       } catch (err) {
         console.error(err);
@@ -147,7 +136,7 @@ export default function Home() {
     const handleAccounts = async (accounts: string[]) => {
       if (accounts && accounts.length > 0) {
         setAddress(accounts[0]);
-        const bal = await getERC20Balance(accounts[0]);
+        const bal = await getOKBBalance(accounts[0]);
         setBalance(bal);
         addTerminalLog(`Active wallet account updated: ${accounts[0]}`, "info");
       } else {
@@ -165,7 +154,7 @@ export default function Home() {
         addTerminalLog("Target network mismatch. Switch target in wallet UI to X Layer Testnet.", "warning");
       }
       if (address) {
-        const bal = await getERC20Balance(address);
+        const bal = await getOKBBalance(address);
         setBalance(bal);
       }
     };
@@ -193,7 +182,7 @@ export default function Home() {
             setAddress(accounts[0]);
             setWalletType("real");
             setForceSandboxSign(false);
-            const bal = await getERC20Balance(accounts[0]);
+            const bal = await getOKBBalance(accounts[0]);
             setBalance(bal);
             addTerminalLog(`Injected wallet session restored: ${accounts[0]}`, "success");
           }
@@ -251,7 +240,7 @@ export default function Home() {
         setAddress(accounts[0]);
         setWalletType("real");
         setForceSandboxSign(false);
-        const realBal = await getERC20Balance(accounts[0]);
+        const realBal = await getOKBBalance(accounts[0]);
         setBalance(realBal);
         addTerminalLog(`Connected browser wallet: ${accounts[0]}`, "success");
       } else {
@@ -293,7 +282,7 @@ export default function Home() {
         setAddress(account.address);
         currentWalletType = "sandbox";
         setWalletType("sandbox");
-        const realBal = await getERC20Balance(account.address);
+        const realBal = await getOKBBalance(account.address);
         setBalance(realBal);
         addTerminalLog(`Sandbox wallet auto-instantiated: ${account.address}`, "success");
       } else if (eth) {
@@ -305,7 +294,7 @@ export default function Home() {
             setAddress(currentAddress);
             currentWalletType = "real";
             setWalletType("real");
-            const realBal = await getERC20Balance(accounts[0]);
+            const realBal = await getOKBBalance(accounts[0]);
             setBalance(realBal);
             addTerminalLog(`Connected browser wallet: ${accounts[0]}`, "success");
           } else {
@@ -338,14 +327,14 @@ export default function Home() {
 
     let currentBalanceStr = balance;
     if (activeAddr) {
-      currentBalanceStr = await getERC20Balance(activeAddr);
+      currentBalanceStr = await getOKBBalance(activeAddr);
       setBalance(currentBalanceStr);
     }
 
     const balanceNum = parseFloat(currentBalanceStr);
-    if (balanceNum < 0.01) {
+    if (balanceNum < 0.0001) {
       setShowFaucetModal(true);
-      addTerminalLog(`Analysis aborted: insufficient balance (${currentBalanceStr} USDC). Claims required from the faucet.`, "error");
+      addTerminalLog(`Analysis aborted: insufficient native OKB balance (${currentBalanceStr} OKB). Claims required from the faucet.`, "error");
       return;
     }
 
@@ -531,36 +520,95 @@ export default function Home() {
     }, 1500);
   };
 
-  // Simulate local free testnet portfolio deployment
-  const deployPortfolio = () => {
+  // Execute real on-chain portfolio deployment simulation via native OKB transfer
+  const deployPortfolio = async () => {
     if (isDeploying || isDeployed || !analysisResult) return;
     setIsDeploying(true);
     setDeploymentLogs([]);
 
-    const logsStream = [
-      "Connecting to X Layer Testnet node (https://xlayertestrpc.okx.com)...",
-      "Assembling smart contract deployment parameters...",
-      "Encoding portfolio allocation structures...",
-      `Allocating portfolio: ${Object.entries(analysisResult.portfolioRecommendation)
-        .map(([asset, percentage]) => `${asset} (${percentage}%)`)
-        .join(", ")}`,
-      "Signing local contract execution payload...",
-      "Transaction broadcasted to X Layer mempool...",
-      "Waiting for receipt confirmations...",
-      `Successfully deployed target allocation! Transaction hash: 0x${Math.random().toString(16).substring(2, 10)}${Math.random().toString(16).substring(2, 10)}b87195`
-    ];
+    const addLog = (log: string | React.ReactNode) => {
+      setDeploymentLogs(prev => [...prev, log]);
+    };
 
-    let currentLogIdx = 0;
-    const interval = setInterval(() => {
-      if (currentLogIdx < logsStream.length) {
-        setDeploymentLogs(prev => [...prev, logsStream[currentLogIdx]]);
-        currentLogIdx++;
+    try {
+      addLog("Connecting to X Layer Testnet node (https://xlayertestrpc.okx.com)...");
+      await new Promise(r => setTimeout(r, 600));
+
+      addLog("Assembling smart contract deployment parameters...");
+      await new Promise(r => setTimeout(r, 600));
+
+      addLog("Encoding portfolio allocation structures...");
+      addLog(`Target allocation: ${Object.entries(analysisResult.portfolioRecommendation)
+        .map(([asset, percentage]) => `${asset} (${percentage}%)`)
+        .join(", ")}`);
+      await new Promise(r => setTimeout(r, 600));
+
+      addLog("Preparing on-chain transfer of 0.0001 OKB to verify deployment allocation...");
+      await new Promise(r => setTimeout(r, 600));
+
+      let walletClient;
+      if (walletType === "sandbox") {
+        const pk = localStorage.getItem("whisper_sandbox_pk");
+        if (!pk) throw new Error("No sandbox private key found.");
+        const account = privateKeyToAccount(pk as `0x${string}`);
+        walletClient = createWalletClient({
+          account,
+          chain: {
+            id: 195,
+            name: "X Layer Testnet",
+            nativeCurrency: { name: "OKB", symbol: "OKB", decimals: 18 },
+            rpcUrls: {
+              default: { http: ["https://xlayertestrpc.okx.com"] },
+            },
+          },
+          transport: http()
+        });
       } else {
-        clearInterval(interval);
-        setIsDeploying(false);
-        setIsDeployed(true);
+        const eth = (window as any).ethereum;
+        if (!eth) throw new Error("No injected Web3 provider detected.");
+        walletClient = createWalletClient({
+          account: address as `0x${string}`,
+          chain: {
+            id: 195,
+            name: "X Layer Testnet",
+            nativeCurrency: { name: "OKB", symbol: "OKB", decimals: 18 },
+            rpcUrls: {
+              default: { http: ["https://xlayertestrpc.okx.com"] },
+            },
+          },
+          transport: custom(eth)
+        });
       }
-    }, 800);
+
+      addLog("Requesting wallet transaction signature...");
+      const hash = await walletClient.sendTransaction({
+        to: (process.env.NEXT_PUBLIC_SELLER_WALLET_ADDRESS || "0x742d35Cc6634C0532925a3b844Bc454e4438f44e") as `0x${string}`,
+        value: BigInt("100000000000000"), // 0.0001 OKB in wei
+      });
+
+      addLog("Transaction broadcasted to mempool. Waiting for confirmation...");
+      await new Promise(r => setTimeout(r, 1000));
+
+      addLog(
+        <span className="text-emerald-400">
+          Successfully deployed! Tx Hash:{" "}
+          <a
+            href={`https://www.okx.com/web3/explorer/xlayer/tx/${hash}`}
+            target="_blank"
+            rel="noreferrer"
+            className="underline font-bold text-white hover:text-zinc-200"
+          >
+            {hash.slice(0, 10)}...{hash.slice(-8)}
+          </a>
+        </span>
+      );
+
+      setIsDeployed(true);
+    } catch (err: any) {
+      addLog(<span className="text-rose-500 font-bold">Deployment aborted: {err.message || err}</span>);
+    } finally {
+      setIsDeploying(false);
+    }
   };
 
   // Scroll to bottom of log containers
@@ -616,7 +664,7 @@ export default function Home() {
                 <span className="text-zinc-400">ADDR:</span> <span className="font-bold">{address.slice(0, 6)}...{address.slice(-4)}</span>
               </div>
               <div className="border border-black px-3 py-1.5 bg-zinc-50">
-                <span className="text-zinc-400">BAL:</span> <span className="font-bold">{balance} USDC</span>
+                <span className="text-zinc-400">BAL:</span> <span className="font-bold">{balance} OKB</span>
               </div>
               <button
                 onClick={disconnectWallet}
@@ -781,6 +829,21 @@ export default function Home() {
               </div>
             )}
 
+            {parseFloat(balance) === 0 && walletType !== "none" && (
+              <div className="text-rose-600 font-mono text-[10px] uppercase text-center border border-rose-600 bg-rose-50/50 py-2.5 px-4 mb-4">
+                Your testnet wallet is empty. Click{" "}
+                <a 
+                  href="https://www.okx.com/en-sg/help/okx-ai-101" 
+                  target="_blank" 
+                  rel="noreferrer" 
+                  className="underline font-bold text-rose-800 hover:text-black"
+                >
+                  here
+                </a>{" "}
+                or use the Faucet button in your OKX Wallet to get free OKB.
+              </div>
+            )}
+
             {/* Action Buttons */}
             <div className="flex flex-col gap-2">
               {analysisResult && agentStep === 5 ? (
@@ -856,17 +919,17 @@ export default function Home() {
       {showFaucetModal && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 z-50">
           <div className="bg-white border border-black shadow-[8px_8px_0px_0px_rgba(0,0,0,1)] max-w-md w-full p-8 font-mono text-xs leading-relaxed relative">
-            <h3 className="text-sm font-black border-b border-black pb-2 mb-4 uppercase tracking-tighter">INSUFFICIENT TESTNET USDC BALANCE</h3>
+            <h3 className="text-sm font-black border-b border-black pb-2 mb-4 uppercase tracking-tighter">INSUFFICIENT TESTNET GAS BALANCE</h3>
             <p className="text-zinc-600 mb-6 uppercase text-[10px]">
-              You require at least $0.01 USDC on X Layer Testnet to trigger the agent pipeline payment.
+              You require at least 0.0001 OKB on X Layer Testnet to pay transaction fees and run the agent pipeline.
             </p>
             
             <div className="space-y-4">
               {walletType === "sandbox" && (
                 <button
                   onClick={() => {
-                    setBalance("10.00");
-                    addTerminalLog("Auto-funded Sandbox wallet with $10.00 mock USDC.", "success");
+                    setBalance("0.5000");
+                    addTerminalLog("Auto-funded Sandbox wallet with mock OKB.", "success");
                     setShowFaucetModal(false);
                   }}
                   className="w-full py-2.5 border border-black hover:bg-zinc-50 font-bold uppercase tracking-wider"

@@ -203,6 +203,7 @@ export class IntentAgent {
     console.log("Executing IntentAgent...");
     const systemInstruction = `You are the IntentAgent, a behavioral market psychologist.
 Analyze the transaction logs and wallet classification to decipher the primary objective or intent of the wallet movements.
+Note: Acknowledge that while our client transaction fees and deployment operations run on X Layer Testnet (Chain ID: 195) using native OKB, our tracking and scanning intelligence evaluates live asset actions on X Layer and Ethereum Mainnet.
 Select EXACTLY one intent: "Accumulation", "Distribution", "Arbitrage", or "Liquidity Provisioning".
 Output your response strictly as a JSON object containing:
 {
@@ -258,6 +259,7 @@ export class StrategistAgent {
     console.log("Executing StrategistAgent...");
     const systemInstruction = `You are the StrategistAgent, a quantitative crypto portfolio strategist.
 Consolidate the findings (Wallet Classification: ${payload.classification}, Intended Goal: ${payload.intent}) and generate an optimized portfolio allocation recommendation based on the user's risk profile (${riskProfile}) and timeframe (${timeframe}).
+Note: Acknowledge that while our client transaction fees and deployment operations run on X Layer Testnet (Chain ID: 195) using native OKB, our tracking and scanning intelligence evaluates live asset actions on X Layer and Ethereum Mainnet.
 Output your response strictly as a JSON object containing:
 {
   "portfolioRecommendation": {
